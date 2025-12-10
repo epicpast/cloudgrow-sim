@@ -1,0 +1,160 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cloudgrow-sim"
+dynamic = ["version"]
+description = "A simulator for greenhouse environments to facilitate training and estimations of tooling and servicing."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Robert Allen", email = "bob@epicpastures.com"}
+]
+keywords = []
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+requires-python = ">=3.14"
+dependencies = [
+    "pydantic>=2.12.5",
+    "pyyaml>=6.0",
+    "numpy>=2.3.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-cov>=7.0.0",
+    "pytest-asyncio>=1.0.0",
+    "ruff>=0.14.0",
+    "mypy>=1.18.0",
+    "bandit>=1.8.0",
+    "pip-audit>=2.9.0",
+    "build>=1.0.0",
+    "coolprop>=7.2.0",
+    "hypothesis>=6.0",
+    "types-PyYAML>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/epicpast/cloudgrow-sim"
+Documentation = "https://github.com/epicpast/cloudgrow-sim#readme"
+Repository = "https://github.com/epicpast/cloudgrow-sim.git"
+"Bug Tracker" = "https://github.com/epicpast/cloudgrow-sim/issues"
+
+[project.scripts]
+cloudgrow-sim = "cloudgrow_sim.main:main"
+
+# UV/Astral dependency groups (modern tooling)
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-cov>=7.0.0",
+    "pytest-asyncio>=1.0.0",
+    "ruff>=0.14.0",
+    "mypy>=1.18.0",
+    "bandit>=1.8.0",
+    "pip-audit>=2.9.0",
+    "build>=1.0.0",
+    "coolprop>=7.2.0",
+    "hypothesis>=6.0",
+    "types-PyYAML>=6.0",
+]
+
+# Hatch build configuration
+[tool.hatch.version]
+path = "src/cloudgrow_sim/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cloudgrow_sim"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/cloudgrow_sim/**/*.py"]
+
+# Ruff - Linting and Formatting
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+    "S",      # flake8-bandit (security)
+]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.ruff.lint.isort]
+known-first-party = ["cloudgrow_sim"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106", "ARG001"]
+
+# mypy - Type Checking
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_configs = true
+show_error_codes = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["CoolProp.*", "hypothesis.*"]
+ignore_missing_imports = true
+
+# pytest - Testing
+[tool.pytest]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "-v"]
+filterwarnings = ["error"]
+
+# Coverage
+[tool.coverage.run]
+source = ["src/cloudgrow_sim"]
+branch = true
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+fail_under = 80
+
+# Bandit - Security
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "venv"]
+skips = ["B101"]  # assert_used OK in tests
