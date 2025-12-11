@@ -25,6 +25,8 @@ dependencies = [
     "pydantic>=2.12.5",
     "pyyaml>=6.0",
     "numpy>=2.3.5",
+    "typer>=0.15.0",
+    "rich>=14.0.0",
 ]
 
 [project.optional-dependencies]
@@ -49,7 +51,7 @@ Repository = "https://github.com/epicpast/cloudgrow-sim.git"
 "Bug Tracker" = "https://github.com/epicpast/cloudgrow-sim/issues"
 
 [project.scripts]
-cloudgrow-sim = "cloudgrow_sim.main:main"
+cgsim = "cloudgrow_sim.main:main"
 
 # UV/Astral dependency groups (modern tooling)
 [dependency-groups]

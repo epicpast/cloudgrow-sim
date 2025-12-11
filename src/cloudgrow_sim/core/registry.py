@@ -63,10 +63,17 @@ class ComponentRegistry:
             The registered class (for use as decorator).
 
         Raises:
-            ValueError: If a component with the same category/type is already registered.
+            ValueError: If a different component with the same category/type
+                is already registered.
         """
         if component_type in self._components[category]:
             existing = self._components[category][component_type]
+            # Allow idempotent registration (same class re-registering after reload)
+            # Check by class name since reloaded modules create new class objects
+            if existing.__name__ == component_class.__name__:
+                # Same class being re-registered, allow it
+                self._components[category][component_type] = component_class
+                return component_class
             msg = (
                 f"Component '{category}/{component_type}' already registered "
                 f"as {existing.__name__}"

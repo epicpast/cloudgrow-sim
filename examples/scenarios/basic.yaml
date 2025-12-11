@@ -1,0 +1,55 @@
+# Basic Hobby Greenhouse Scenario
+# Simple greenhouse with exhaust fan ventilation control
+#
+# Matches: create_basic_scenario() in scenarios.py
+# Use case: Testing basic simulation functionality
+
+name: "Basic Hobby Greenhouse"
+time_step: 60.0  # seconds
+duration: 86400.0  # 24 hours
+
+location:
+  latitude: 37.5
+  longitude: -77.4
+  elevation: 50.0
+  timezone: "America/New_York"
+
+geometry:
+  type: gable
+  length: 10.0
+  width: 6.0
+  height_ridge: 3.5
+  height_eave: 2.4
+  orientation: 0.0
+
+covering:
+  material: double_polyethylene
+
+components:
+  sensors:
+    - type: temperature
+      name: temp_int
+      location: interior
+      noise_std_dev: 0.0
+
+  actuators:
+    - type: exhaust_fan
+      name: exhaust_1
+      controller: vent_control
+      max_flow_rate: 1.0
+      power_consumption: 500.0
+
+  controllers:
+    - type: hysteresis
+      name: vent_control
+      process_variable: temp_int.temperature
+      setpoint: 28.0
+      hysteresis: 2.0
+      reverse_acting: true
+
+  modifiers: []
+
+weather:
+  source: synthetic
+  base_temperature: 18.0
+  temperature_amplitude: 8.0

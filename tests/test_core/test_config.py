@@ -5,9 +5,14 @@ from __future__ import annotations
 import pytest
 
 from cloudgrow_sim.core.config import (
+    ActuatorConfig,
+    ComponentsConfig,
+    ControllerConfig,
     CoveringConfig,
     GeometryConfig,
     LocationConfig,
+    ModifierConfig,
+    SensorConfig,
 )
 from cloudgrow_sim.core.state import GeometryType
 
@@ -165,3 +170,106 @@ class TestCoveringConfig:
         assert config.material == "double_polyethylene"
         assert config.transmittance_solar == 0.77
         assert config.u_value == 4.0
+
+
+class TestModifierConfig:
+    """Tests for ModifierConfig."""
+
+    def test_modifier_config_valid(self) -> None:
+        """Create valid modifier config."""
+        config = ModifierConfig(type="covering", name="main_covering")
+        assert config.type == "covering"
+        assert config.name == "main_covering"
+        assert config.enabled is True  # default
+
+    def test_modifier_config_extra_fields_allowed(self) -> None:
+        """Extra fields pass through for component-specific params."""
+        config = ModifierConfig(
+            type="thermal_mass",
+            name="water_barrels",
+            mass=2000.0,
+            specific_heat=4186.0,
+            surface_area=10.0,
+            initial_temperature=20.0,
+        )
+        assert config.type == "thermal_mass"
+        assert config.name == "water_barrels"
+        # Extra fields accessible via model_dump
+        data = config.model_dump()
+        assert data["mass"] == 2000.0
+        assert data["specific_heat"] == 4186.0
+        assert data["surface_area"] == 10.0
+        assert data["initial_temperature"] == 20.0
+
+    def test_modifier_config_type_required(self) -> None:
+        """Error when type is missing."""
+        with pytest.raises(ValueError):
+            ModifierConfig(name="no_type")  # type: ignore[call-arg]
+
+    def test_modifier_config_name_required(self) -> None:
+        """Error when name is missing."""
+        with pytest.raises(ValueError):
+            ModifierConfig(type="covering")  # type: ignore[call-arg]
+
+    def test_modifier_config_disabled(self) -> None:
+        """Create disabled modifier."""
+        config = ModifierConfig(type="covering", name="disabled_cover", enabled=False)
+        assert config.enabled is False
+
+
+class TestComponentsConfigWithModifiers:
+    """Tests for ComponentsConfig including modifiers."""
+
+    def test_components_config_includes_modifiers(self) -> None:
+        """ComponentsConfig includes modifiers list."""
+        config = ComponentsConfig(
+            sensors=[SensorConfig(type="temperature", name="temp_1")],
+            actuators=[
+                ActuatorConfig(
+                    type="exhaust_fan",
+                    name="fan_1",
+                    max_flow_rate=1.0,
+                    power_consumption=500.0,
+                )
+            ],
+            controllers=[
+                ControllerConfig(
+                    type="hysteresis",
+                    name="ctrl_1",
+                    process_variable="temp_1.temperature",
+                    setpoint=25.0,
+                )
+            ],
+            modifiers=[
+                ModifierConfig(type="covering", name="cover_1", material="single_glass")
+            ],
+        )
+        assert len(config.sensors) == 1
+        assert len(config.actuators) == 1
+        assert len(config.controllers) == 1
+        assert len(config.modifiers) == 1
+        assert config.modifiers[0].type == "covering"
+
+    def test_components_config_empty_modifiers_default(self) -> None:
+        """ComponentsConfig defaults to empty modifiers list."""
+        config = ComponentsConfig()
+        assert config.modifiers == []
+
+    def test_components_config_multiple_modifiers(self) -> None:
+        """ComponentsConfig can have multiple modifiers."""
+        config = ComponentsConfig(
+            modifiers=[
+                ModifierConfig(type="covering", name="cover_1"),
+                ModifierConfig(
+                    type="thermal_mass",
+                    name="mass_1",
+                    mass=1000.0,
+                    specific_heat=4186.0,
+                    surface_area=5.0,
+                    initial_temperature=20.0,
+                ),
+            ]
+        )
+        assert len(config.modifiers) == 2
+        assert config.modifiers[0].type == "covering"
+        assert config.modifiers[1].type == "thermal_mass"

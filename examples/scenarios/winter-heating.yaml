@@ -1,0 +1,81 @@
+# Winter Heating Stress Test Scenario
+# Cold weather conditions to test heating system performance
+#
+# Matches: create_winter_heating_scenario() in scenarios.py
+# Use case: Testing heating capacity and cold weather resilience
+
+name: "Winter Heating Scenario"
+time_step: 60.0  # seconds
+duration: 172800.0  # 48 hours
+
+start_time: "2025-01-15T06:00:00Z"
+
+location:
+  latitude: 42.3
+  longitude: -71.1
+  elevation: 10.0
+  timezone: "America/New_York"
+
+geometry:
+  type: gable
+  length: 20.0
+  width: 8.0
+  height_ridge: 4.0
+  height_eave: 2.5
+  orientation: 0.0
+
+covering:
+  # Polycarbonate for better insulation in cold climates
+  material: polycarbonate_twin
+
+components:
+  sensors:
+    # Interior temperature
+    - type: temperature
+      name: temp_int
+      location: interior
+      noise_std_dev: 0.1
+
+    # Exterior temperature
+    - type: temperature
+      name: temp_ext
+      location: exterior
+      noise_std_dev: 0.1
+
+  actuators:
+    # Main heater (25 kW)
+    - type: unit_heater
+      name: main_heater
+      controller: heating_pid
+      heating_capacity: 25000.0
+      efficiency: 0.92
+
+    # Backup heater (15 kW)
+    - type: unit_heater
+      name: backup_heater
+      heating_capacity: 15000.0
+      efficiency: 0.88
+
+  controllers:
+    # PID heating control for precise temperature management
+    - type: pid
+      name: heating_pid
+      process_variable: temp_int.temperature
+      setpoint: 18.0
+      kp: 0.8
+      ki: 0.2
+      kd: 0.1
+      output_limits: [0.0, 1.0]
+      reverse_acting: false
+
+  modifiers:
+    # Polycarbonate covering for insulation
+    - type: covering
+      name: covering
+      material: polycarbonate_twin
+
+weather:
+  source: synthetic
+  # Cold winter conditions
+  base_temperature: -2.0
+  temperature_amplitude: 5.0

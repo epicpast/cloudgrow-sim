@@ -6,14 +6,15 @@ A production-grade greenhouse climate simulation framework following ASHRAE stan
 
 1. [Installation](#installation)
 2. [Quick Start](#quick-start)
-3. [Core Concepts](#core-concepts)
-4. [Components Reference](#components-reference)
-5. [Controllers Reference](#controllers-reference)
-6. [Weather Sources](#weather-sources)
-7. [Running Simulations](#running-simulations)
-8. [Pre-built Scenarios](#pre-built-scenarios)
-9. [Physics Reference](#physics-reference)
-10. [Examples](#examples)
+3. [Running from Command Line](#running-from-command-line)
+4. [Core Concepts](#core-concepts)
+5. [Components Reference](#components-reference)
+6. [Controllers Reference](#controllers-reference)
+7. [Weather Sources](#weather-sources)
+8. [Running Simulations](#running-simulations)
+9. [Pre-built Scenarios](#pre-built-scenarios)
+10. [Physics Reference](#physics-reference)
+11. [Examples](#examples)
 
 ---
 
@@ -129,6 +130,106 @@ engine.add_controller(PIDController(
 # 5. Run
 stats = engine.run()
 ```
+
+---
+
+## Running from Command Line
+
+The `cgsim` CLI provides a code-free way to run simulations using YAML configuration files.
+
+### Verify Installation
+
+```bash
+cgsim --version
+```
+
+### Run a Built-in Scenario
+
+```bash
+# List available scenarios
+cgsim list
+
+# Run the basic scenario
+cgsim run --scenario basic
+
+# Run full climate control scenario
+cgsim run --scenario full-climate
+```
+
+### Run Your Own Configuration
+
+```bash
+# Run a YAML configuration file
+cgsim run my-greenhouse.yaml
+
+# Validate a config without running
+cgsim validate my-greenhouse.yaml
+```
+
+### Generate a Starter Configuration
+
+```bash
+# Create a new config file
+cgsim init "My Greenhouse" -o my-greenhouse.yaml
+
+# The generated file includes sensible defaults and comments
+```
+
+### Override Simulation Parameters
+
+```bash
+# Override duration (in hours)
+cgsim run config.yaml --duration 48
+
+# Override time step (in seconds)
+cgsim run config.yaml --time-step 30
+
+# Combine multiple overrides
+cgsim run config.yaml -d 24 -t 30
+```
+
+### Output Options
+
+```bash
+# Save results to a directory
+cgsim run config.yaml --output-dir ./results
+
+# Choose output format
+cgsim run config.yaml --format json --output-dir ./results
+cgsim run config.yaml --format csv --output-dir ./results
+
+# Available formats: console (default), json, csv
+```
+
+### Quiet Mode
+
+```bash
+# Suppress progress output (useful for scripts)
+cgsim run config.yaml --quiet
+
+# Combine with output for batch processing
+cgsim run config.yaml -q -f json -o ./results
+```
+
+### Common CLI Errors
+
+**Config file not found:**
+```
+Error: Config file 'missing.yaml' not found
+```
+Solution: Check the file path and ensure the YAML file exists.
+
+**Invalid configuration:**
+```
+Error: Invalid: Field 'latitude' must be between -90 and 90
+```
+Solution: Run `cgsim validate config.yaml` to see detailed validation errors.
+
+**Cannot specify both config and scenario:**
+```
+Error: Cannot specify both a config file and --scenario
+```
+Solution: Use either a config file OR the --scenario flag, not both.
 
 ---
 
