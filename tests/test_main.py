@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from typer.testing import CliRunner
+
 from cloudgrow_sim import __version__
-from cloudgrow_sim.main import main
+from cloudgrow_sim.main import app
+
+runner = CliRunner()
 
 
 def test_version() -> None:
@@ -11,7 +15,9 @@ def test_version() -> None:
     assert __version__ == "0.1.0"
 
 
-def test_main_returns_zero() -> None:
-    """Test that main() returns 0."""
-    result = main()
-    assert result == 0
+def test_app_shows_help() -> None:
+    """Test that app shows help when called with no args."""
+    result = runner.invoke(app, [])
+    # With no_args_is_help=True, typer shows help but exits with code 2
+    assert result.exit_code == 2
+    assert "ASHRAE-compliant" in result.stdout or "Usage:" in result.stdout

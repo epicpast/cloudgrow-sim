@@ -1,10 +1,14 @@
-"""Simulation engine and weather modules."""
+"""Simulation engine, factory, and weather modules."""
 
 from cloudgrow_sim.simulation.engine import (
     SimulationConfig,
     SimulationEngine,
     SimulationStats,
     SimulationStatus,
+)
+from cloudgrow_sim.simulation.factory import (
+    create_engine_from_config,
+    ensure_components_registered,
 )
 from cloudgrow_sim.simulation.scenarios import (
     create_basic_scenario,
@@ -28,6 +32,9 @@ __all__ = [
     "SimulationEngine",
     "SimulationStats",
     "SimulationStatus",
+    # Factory
+    "create_engine_from_config",
+    "ensure_components_registered",
     # Weather
     "CSVWeatherSource",
     "SyntheticWeatherConfig",

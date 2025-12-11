@@ -35,7 +35,7 @@ class TestComponentRegistry:
         assert retrieved is TestSensor
 
     def test_duplicate_registration_error(self) -> None:
-        """Error on duplicate registration."""
+        """Error on duplicate registration with different class."""
         registry = ComponentRegistry()
 
         class TestSensor(Sensor):
@@ -43,10 +43,19 @@ class TestComponentRegistry:
                 del state  # Unused in test
                 return {"value": 0.0}
 
+        class AnotherSensor(Sensor):
+            def read(self, state: GreenhouseState) -> dict[str, float]:
+                del state  # Unused in test
+                return {"value": 1.0}
+
         registry.register("sensor", "test", TestSensor)
 
+        # Same class can be re-registered (idempotent for module reloading)
+        registry.register("sensor", "test", TestSensor)
+
+        # But different class with same type should error
         with pytest.raises(ValueError, match="already registered"):
-            registry.register("sensor", "test", TestSensor)
+            registry.register("sensor", "test", AnotherSensor)
 
     def test_get_nonexistent(self) -> None:
         """Error when getting non-existent component."""

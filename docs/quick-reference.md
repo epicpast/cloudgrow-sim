@@ -6,6 +6,27 @@
 git clone https://github.com/OWNER/cloudgrow-sim.git && cd cloudgrow-sim && uv sync
 ```
 
+## CLI Quick Reference
+
+| Command | Description |
+|---------|-------------|
+| `cgsim run config.yaml` | Run simulation from YAML file |
+| `cgsim run -s basic` | Run built-in scenario |
+| `cgsim list` | List available scenarios |
+| `cgsim init "Name"` | Generate starter config |
+| `cgsim validate config.yaml` | Validate without running |
+
+### CLI Options
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--scenario` | `-s` | Use built-in scenario |
+| `--duration` | `-d` | Override duration (hours) |
+| `--time-step` | `-t` | Override time step (seconds) |
+| `--output-dir` | `-o` | Output directory |
+| `--format` | `-f` | Output format: console, csv, json |
+| `--quiet` | `-q` | Suppress progress output |
+
 ## Minimal Example
 
 ```python

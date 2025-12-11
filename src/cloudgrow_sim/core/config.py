@@ -12,6 +12,7 @@ The configuration hierarchy:
     - SensorConfig[]
     - ActuatorConfig[]
     - ControllerConfig[]
+    - ModifierConfig[]
   - SetpointsConfig
   - WeatherConfig
   - OutputConfig
@@ -176,18 +177,33 @@ class ControllerConfig(BaseModel):
     anti_windup: bool = True
 
 
+class ModifierConfig(BaseModel):
+    """Modifier component configuration.
+
+    Modifiers are passive elements that affect greenhouse climate
+    without active control (e.g., covering materials, thermal mass).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str = Field(description="Modifier type from registry")
+    name: str = Field(description="Unique modifier name")
+    enabled: bool = True
+
+
 class ComponentsConfig(BaseModel):
     """Container for all component configurations."""
 
     sensors: list[SensorConfig] = Field(default_factory=list)
     actuators: list[ActuatorConfig] = Field(default_factory=list)
     controllers: list[ControllerConfig] = Field(default_factory=list)
+    modifiers: list[ModifierConfig] = Field(default_factory=list)
 
-    @field_validator("sensors", "actuators", "controllers", mode="after")
+    @field_validator("sensors", "actuators", "controllers", "modifiers", mode="after")
     @classmethod
     def validate_unique_names(
-        cls, v: list[SensorConfig | ActuatorConfig | ControllerConfig]
-    ) -> list[SensorConfig | ActuatorConfig | ControllerConfig]:
+        cls, v: list[SensorConfig | ActuatorConfig | ControllerConfig | ModifierConfig]
+    ) -> list[SensorConfig | ActuatorConfig | ControllerConfig | ModifierConfig]:
         """Ensure all component names are unique within their category."""
         names = [c.name for c in v]
         if len(names) != len(set(names)):
