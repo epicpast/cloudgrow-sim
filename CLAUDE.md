@@ -20,6 +20,7 @@ uv run pytest -k "test_solar_position" -v                            # Pattern m
 make lint                   # ruff check
 make typecheck              # mypy
 make format                 # auto-fix formatting
+make security               # bandit security scan
 ```
 
 ## Architecture
@@ -36,11 +37,19 @@ simulation/     → Engine: weather sources, simulation loop, scenarios
 
 ### Key Design Patterns
 
-**Component System**: All sensors/actuators/controllers inherit from `Component` ABC in `core/base.py`. Each must implement `update(dt, state) -> None`. Components are registered via `@register_component("category", "type")` decorator from `core/registry.py`.
+**Component System**: All components inherit from `Component` ABC in `core/base.py`. Four component types:
+- `Sensor`: implements `read(state) -> dict[str, float]`
+- `Actuator`: implements `get_effect(state) -> dict[str, float]` and `_apply_effect(dt, state)`
+- `Controller`: implements `compute(process_value, dt) -> float`
+- `ClimateModifier`: implements `get_properties() -> dict[str, Any]`
+
+Components are registered via `@register_component("category", "type")` decorator from `core/registry.py`.
 
 **State Flow**: `GreenhouseState` (in `core/state.py`) contains `AirState` for interior/exterior, plus geometry, covering, location, weather. Passed to all components during simulation step.
 
 **Event System**: `EventBus` singleton in `core/events.py` with pub/sub pattern. Event types use dot-notation: `EventType.SIMULATION_START` = `"simulation.start"`.
+
+**Configuration System**: Pydantic v2 models in `core/config.py`. Load YAML/JSON via `load_config(path)`. Config classes have `to_*()` methods to create state objects (e.g., `LocationConfig.to_location()`, `CoveringConfig.to_covering()`).
 
 **Simulation Loop** (in `simulation/engine.py`):
 1. Update exterior from weather source
