@@ -364,6 +364,10 @@ class CSVWeatherSource(WeatherSource):
 
     Supports various CSV formats with configurable column mapping.
     Interpolates between data points for smooth transitions.
+
+    Attributes:
+        strict: If True, raise ValueError when columns are missing instead
+            of using defaults. Useful for catching configuration errors early.
     """
 
     def __init__(
@@ -371,6 +375,7 @@ class CSVWeatherSource(WeatherSource):
         file_path: Path | str,
         mapping: CSVWeatherMapping | None = None,
         timestamp_format: str = "%Y-%m-%d %H:%M:%S",
+        strict: bool = False,
     ) -> None:
         """Initialize CSV weather source.
 
@@ -378,6 +383,9 @@ class CSVWeatherSource(WeatherSource):
             file_path: Path to CSV file.
             mapping: Column name mapping.
             timestamp_format: strptime format for timestamp column.
+            strict: If True, raise ValueError when mapped columns are missing
+                from the CSV file. If False (default), use sensible defaults
+                for missing columns and log a warning.
 
         Raises:
             ValueError: If file path is invalid or has wrong extension.
@@ -386,6 +394,7 @@ class CSVWeatherSource(WeatherSource):
         self.file_path = _validate_csv_path(Path(file_path))
         self.mapping = mapping or CSVWeatherMapping()
         self.timestamp_format = timestamp_format
+        self._strict = strict
         self._data: list[WeatherConditions] = []
         self._loaded = False
         self._skipped_rows = 0
@@ -399,23 +408,52 @@ class CSVWeatherSource(WeatherSource):
         self._skipped_rows = 0
         # Track columns that used defaults (log once per column, not per row)
         columns_with_defaults: set[str] = set()
+        # Track available columns for error messages (set on first row)
+        available_columns: set[str] = set()
 
         def get_float_or_default(
             row: dict[str, str],
             column: str,
             default: float,
         ) -> float:
-            """Get float value from row, logging if default is used."""
+            """Get float value from row, logging if default is used.
+
+            Args:
+                row: CSV row as a dictionary.
+                column: Column name to extract.
+                default: Default value if column is missing.
+
+            Returns:
+                The float value from the column, or default if missing.
+
+            Raises:
+                ValueError: If strict mode is enabled and column is missing,
+                    or if the value cannot be converted to float.
+            """
             value = row.get(column)
             if value is None:
+                if self._strict:
+                    msg = (
+                        f"Column '{column}' not found in CSV file. "
+                        f"Available columns: {sorted(available_columns)}"
+                    )
+                    raise ValueError(msg)
                 columns_with_defaults.add(column)
                 return default
-            return float(value)
+            try:
+                return float(value)
+            except ValueError as e:
+                msg = f"Column '{column}' has invalid value '{value}': {e}"
+                raise ValueError(msg) from e
 
         with self.file_path.open(newline="") as f:
             reader = csv.DictReader(f)
 
             for row_num, row in enumerate(reader, start=2):  # Start at 2 (header is 1)
+                # Capture available columns from first row
+                if not available_columns:
+                    available_columns = set(row.keys())
+
                 try:
                     timestamp = datetime.strptime(
                         row[self.mapping.timestamp],
@@ -466,6 +504,15 @@ class CSVWeatherSource(WeatherSource):
                         self.file_path,
                         e,
                     )
+
+        # Strict mode: raise if any columns used defaults
+        if self._strict and columns_with_defaults:
+            msg = (
+                f"Strict mode: columns not found in CSV file: "
+                f"{sorted(columns_with_defaults)}. "
+                f"Available columns: {sorted(available_columns)}"
+            )
+            raise ValueError(msg)
 
         # Log warning for any columns that used default values
         if columns_with_defaults:
