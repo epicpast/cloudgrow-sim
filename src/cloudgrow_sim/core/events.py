@@ -12,8 +12,8 @@ Events can be used for:
 
 from __future__ import annotations
 
-from collections import defaultdict
-from collections.abc import Callable
+from collections import defaultdict, deque
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -119,7 +119,7 @@ class EventBus:
             max_history: Maximum number of events to keep in history.
         """
         self._handlers: dict[str, list[EventHandler]] = defaultdict(list)
-        self._history: list[Event] = []
+        self._history: deque[Event] = deque(maxlen=max_history)
         self._max_history = max_history
 
     def subscribe(
@@ -171,10 +171,8 @@ class EventBus:
         Args:
             event: The event to emit.
         """
-        # Add to history
+        # Add to history - deque with maxlen handles automatic FIFO trimming
         self._history.append(event)
-        if len(self._history) > self._max_history:
-            self._history = self._history[-self._max_history :]
 
         # Get event type key
         event_key = (
@@ -218,6 +216,46 @@ class EventBus:
         self.emit(event)
         return event
 
+    def _iter_history_filtered(
+        self,
+        event_type: EventType | str | None = None,
+        source: str | None = None,
+    ) -> Iterator[Event]:
+        """Iterate over history with filtering applied.
+
+        Uses generator-based filtering to avoid creating full list copies,
+        which is more memory efficient for large histories.
+
+        Args:
+            event_type: Filter by event type.
+            source: Filter by source.
+
+        Yields:
+            Events matching the filters.
+        """
+        type_key: str | None = None
+        if event_type is not None:
+            type_key = (
+                event_type.value if isinstance(event_type, EventType) else event_type
+            )
+
+        for event in self._history:
+            # Check event type filter
+            if type_key is not None:
+                event_key = (
+                    event.event_type.value
+                    if isinstance(event.event_type, EventType)
+                    else event.event_type
+                )
+                if event_key != type_key:
+                    continue
+
+            # Check source filter
+            if source is not None and event.source != source:
+                continue
+
+            yield event
+
     def get_history(
         self,
         event_type: EventType | str | None = None,
@@ -225,6 +263,9 @@ class EventBus:
         limit: int | None = None,
     ) -> list[Event]:
         """Get event history with optional filtering.
+
+        Uses generator-based filtering internally to avoid creating
+        intermediate list copies for memory efficiency.
 
         Args:
             event_type: Filter by event type.
@@ -234,28 +275,13 @@ class EventBus:
         Returns:
             List of events matching filters (most recent last).
         """
-        result = self._history
-
-        if event_type is not None:
-            key = event_type.value if isinstance(event_type, EventType) else event_type
-            result = [
-                e
-                for e in result
-                if (
-                    e.event_type.value
-                    if isinstance(e.event_type, EventType)
-                    else e.event_type
-                )
-                == key
-            ]
-
-        if source is not None:
-            result = [e for e in result if e.source == source]
+        # Use generator-based filtering to avoid full copy before filtering
+        filtered = list(self._iter_history_filtered(event_type, source))
 
         if limit is not None:
-            result = result[-limit:]
+            return filtered[-limit:]
 
-        return result
+        return filtered
 
     def clear_history(self) -> None:
         """Clear event history."""
@@ -292,11 +318,13 @@ def get_event_bus() -> EventBus:
 def reset_event_bus() -> None:
     """Reset the global event bus.
 
-    Primarily useful for testing.
+    Primarily useful for testing. Setting to None allows the old instance
+    to be garbage collected; explicit clear() before None is redundant.
     """
     global _global_bus
-    if _global_bus is not None:
-        _global_bus.clear()
+    # M3 Fix: Removed redundant clear() call before setting to None.
+    # The old EventBus instance will be garbage collected when _global_bus
+    # is set to None and no other references exist.
     _global_bus = None
 
 
@@ -314,7 +342,7 @@ def emit_state_update(
 
     Args:
         source: Source of the update.
-        temperature: Temperature in °C (if changed).
+        temperature: Temperature in C (if changed).
         humidity: Humidity in % (if changed).
         co2: CO2 in ppm (if changed).
         **extra: Additional state data.
