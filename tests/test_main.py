@@ -11,8 +11,11 @@ runner = CliRunner()
 
 
 def test_version() -> None:
-    """Test that version is defined."""
-    assert __version__ == "0.1.0"
+    """Test that version is defined and follows semver."""
+    assert __version__
+    parts = __version__.split(".")
+    assert len(parts) == 3
+    assert all(part.isdigit() for part in parts)
 
 
 def test_app_shows_help() -> None:
