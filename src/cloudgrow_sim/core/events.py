@@ -12,12 +12,15 @@ Events can be used for:
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class EventType(str, Enum):
@@ -168,6 +171,10 @@ class EventBus:
     def emit(self, event: Event) -> None:
         """Emit an event to all subscribers.
 
+        Handler exceptions are logged but do not prevent other handlers from
+        being called. This ensures one buggy handler doesn't break the entire
+        event system.
+
         Args:
             event: The event to emit.
         """
@@ -183,11 +190,29 @@ class EventBus:
 
         # Notify specific handlers
         for handler in self._handlers[event_key]:
-            handler(event)
+            try:
+                handler(event)
+            except Exception:
+                handler_name = getattr(handler, "__name__", str(handler))
+                logger.exception(
+                    "Event handler '%s' failed processing %s event from %s",
+                    handler_name,
+                    event_key,
+                    event.source,
+                )
 
         # Notify wildcard handlers
         for handler in self._handlers["*"]:
-            handler(event)
+            try:
+                handler(event)
+            except Exception:
+                handler_name = getattr(handler, "__name__", str(handler))
+                logger.exception(
+                    "Event handler '%s' failed processing %s event from %s",
+                    handler_name,
+                    event_key,
+                    event.source,
+                )
 
     def emit_simple(
         self,
