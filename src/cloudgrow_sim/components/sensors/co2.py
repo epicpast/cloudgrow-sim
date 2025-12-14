@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import random
-
 from cloudgrow_sim.core.base import Sensor
 from cloudgrow_sim.core.registry import register_component
 from cloudgrow_sim.core.state import GreenhouseState
@@ -37,10 +35,7 @@ class CO2Sensor(Sensor):
             true_value = state.interior.co2_ppm
 
         # Add measurement noise (ensure non-negative)
-        if self.noise_std_dev > 0:
-            noise = random.gauss(0, self.noise_std_dev)
-            measured = max(0.0, true_value + noise)
-        else:
-            measured = true_value
+        measured = self._add_noise(true_value)
+        measured = max(0.0, measured)
 
         return {"co2": measured}

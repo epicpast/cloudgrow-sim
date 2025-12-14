@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-import random
+from typing import TYPE_CHECKING
 
 from cloudgrow_sim.core.base import Sensor
 from cloudgrow_sim.core.registry import register_component
 from cloudgrow_sim.core.state import GreenhouseState
+
+if TYPE_CHECKING:
+    from numpy.random import Generator
 
 
 @register_component("sensor", "humidity")
@@ -35,12 +38,9 @@ class HumiditySensor(Sensor):
         else:
             true_value = state.interior.humidity
 
-        # Add measurement noise
-        if self.noise_std_dev > 0:
-            noise = random.gauss(0, self.noise_std_dev)
-            measured = max(0.0, min(100.0, true_value + noise))
-        else:
-            measured = true_value
+        # Add measurement noise and clamp to valid range
+        measured = self._add_noise(true_value)
+        measured = max(0.0, min(100.0, measured))
 
         return {"humidity": measured}
 
@@ -69,6 +69,8 @@ class CombinedTempHumiditySensor(Sensor):
         temp_noise_std_dev: float | None = None,
         humidity_noise_std_dev: float | None = None,
         enabled: bool = True,
+        rng: Generator | None = None,
+        seed: int | None = None,
     ) -> None:
         """Initialize combined sensor.
 
@@ -79,8 +81,17 @@ class CombinedTempHumiditySensor(Sensor):
             temp_noise_std_dev: Override noise for temperature.
             humidity_noise_std_dev: Override noise for humidity.
             enabled: Whether sensor is active.
+            rng: NumPy random generator for reproducible simulations.
+            seed: Seed for creating a new random generator if rng is None.
         """
-        super().__init__(name, location, noise_std_dev=noise_std_dev, enabled=enabled)
+        super().__init__(
+            name,
+            location,
+            noise_std_dev=noise_std_dev,
+            enabled=enabled,
+            rng=rng,
+            seed=seed,
+        )
         self._temp_noise = (
             temp_noise_std_dev if temp_noise_std_dev is not None else noise_std_dev
         )
@@ -97,19 +108,15 @@ class CombinedTempHumiditySensor(Sensor):
             state: Current greenhouse state.
 
         Returns:
-            Dictionary with 'temperature' (°C) and 'humidity' (%) keys.
+            Dictionary with 'temperature' (C) and 'humidity' (%) keys.
         """
         air_state = state.exterior if self.location == "exterior" else state.interior
 
         # Temperature with noise
-        temp = air_state.temperature
-        if self._temp_noise > 0:
-            temp += random.gauss(0, self._temp_noise)
+        temp = self._add_noise(air_state.temperature, self._temp_noise)
 
         # Humidity with noise (clamped to valid range)
-        humidity = air_state.humidity
-        if self._humidity_noise > 0:
-            humidity += random.gauss(0, self._humidity_noise)
-            humidity = max(0.0, min(100.0, humidity))
+        humidity = self._add_noise(air_state.humidity, self._humidity_noise)
+        humidity = max(0.0, min(100.0, humidity))
 
         return {"temperature": temp, "humidity": humidity}

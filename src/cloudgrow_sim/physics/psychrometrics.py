@@ -1,10 +1,10 @@
 """ASHRAE psychrometric calculations.
 
-Reference: ASHRAE Handbook—Fundamentals (2021), Chapter 1
+Reference: ASHRAE Handbook-Fundamentals (2021), Chapter 1
 
 This module implements psychrometric calculations for moist air following
 ASHRAE standards. All functions use SI units:
-- Temperature: °C (internally converted to K for calculations)
+- Temperature: C (internally converted to K for calculations)
 - Pressure: Pa
 - Humidity ratio: kg_water / kg_dry_air
 
@@ -20,6 +20,7 @@ Key equations implemented:
 from __future__ import annotations
 
 import math
+from typing import Final
 
 from cloudgrow_sim.physics.constants import (
     EPSILON,
@@ -42,15 +43,81 @@ from cloudgrow_sim.physics.constants import (
     celsius_to_kelvin,
 )
 
+# =============================================================================
+# ASHRAE Psychrometric Constants
+# Reference: ASHRAE Handbook-Fundamentals (2021), Chapter 1
+# =============================================================================
+
+# M2 Fix: Extract magic numbers to named constants with ASHRAE references
+
+#: Latent heat of vaporization at 0 C (kJ/kg)
+#: ASHRAE Handbook-Fundamentals (2021), Chapter 1, Table 2
+#: Used in psychrometric equation for humidity ratio from wet-bulb
+_LATENT_HEAT_0C_KJ: Final[float] = 2501.0
+
+#: Temperature coefficient for latent heat above freezing (kJ/(kg*C))
+#: ASHRAE Handbook-Fundamentals (2021), Chapter 1, Equation 35
+#: h_fg(T) = 2501 - 2.326*T for T >= 0 C
+_LATENT_HEAT_COEF_WATER: Final[float] = 2.326
+
+#: Specific heat of dry air at constant pressure (kJ/(kg*K))
+#: ASHRAE Handbook-Fundamentals (2021), Chapter 1
+_CP_DRY_AIR_KJ: Final[float] = 1.006
+
+#: Specific heat of water vapor at constant pressure (kJ/(kg*K))
+#: ASHRAE Handbook-Fundamentals (2021), Chapter 1
+_CP_WATER_VAPOR_KJ: Final[float] = 1.86
+
+#: Specific heat of liquid water (kJ/(kg*K))
+#: ASHRAE Handbook-Fundamentals (2021), Chapter 1
+_CP_LIQUID_WATER_KJ: Final[float] = 4.186
+
+#: Latent heat of sublimation at 0 C (kJ/kg)
+#: ASHRAE Handbook-Fundamentals (2021), Chapter 1
+#: Used in psychrometric equation below freezing
+_LATENT_HEAT_SUBLIMATION_0C_KJ: Final[float] = 2830.0
+
+#: Temperature coefficient for latent heat below freezing (kJ/(kg*C))
+#: ASHRAE Handbook-Fundamentals (2021), Chapter 1
+_LATENT_HEAT_COEF_ICE: Final[float] = 0.24
+
+#: Specific heat of ice (kJ/(kg*K))
+#: ASHRAE Handbook-Fundamentals (2021), Chapter 1
+_CP_ICE_KJ: Final[float] = 2.1
+
+#: Minimum temperature bound for wet-bulb calculation (in C)
+#: This prevents numerical issues at extreme low humidity conditions
+_WET_BULB_MIN_TEMP: Final[float] = -100.0
+
+#: Absolute minimum tolerance floor for humidity ratio comparisons
+#: M5 Fix: Prevents numerical issues in very dry air conditions
+#: where w_target approaches zero
+_HUMIDITY_RATIO_MIN_TOL: Final[float] = 1e-8
+
+#: Molecular weight ratio correction factor for moist air density
+#: ASHRAE Handbook-Fundamentals (2021), Chapter 1, Equation 28
+#:
+#: The factor 1.6078 accounts for the difference in molecular weight between
+#: dry air and water vapor:
+#:   1.6078 = (M_air / M_water) - 1 = (28.966 / 18.015) - 1
+#:
+#: This correction factor appears because moist air is less dense than dry air
+#: at the same temperature and pressure, due to water vapor's lower molecular
+#: weight. The exact value derives from the ratio of molecular weights:
+#:   M_air = 28.966 g/mol (dry air)
+#:   M_water = 18.015 g/mol (water vapor)
+#:   Ratio = 28.966 / 18.015 = 1.6078
+_MOLECULAR_WEIGHT_RATIO_FACTOR: Final[float] = 1.6078
+
 
 def saturation_pressure(t: float, *, ice: bool = False) -> float:
     """Calculate saturation vapor pressure using ASHRAE Hyland-Wexler correlation.
 
-    ASHRAE Handbook—Fundamentals, Chapter 1, Equations 5 and 6.
+    ASHRAE Handbook-Fundamentals, Chapter 1, Equations 5 and 6.
 
     Args:
-        t: Dry-bulb temperature in °C.
-        ice: If True, calculate over ice (for T < 0°C). Default auto-selects.
+        t: Dry-bulb temperature in C.
+        ice: If True, calculate over ice (for T < 0C). Default auto-selects.
 
     Returns:
         Saturation vapor pressure in Pa.
@@ -59,11 +126,11 @@ def saturation_pressure(t: float, *, ice: bool = False) -> float:
         ValueError: If temperature is outside valid range.
 
     Examples:
-        >>> saturation_pressure(20.0)  # At 20°C
+        >>> saturation_pressure(20.0)  # At 20C
         2338.8...
-        >>> saturation_pressure(0.0)  # At 0°C
+        >>> saturation_pressure(0.0)  # At 0C
         611.2...
-        >>> saturation_pressure(-10.0, ice=True)  # Over ice at -10°C
+        >>> saturation_pressure(-10.0, ice=True)  # Over ice at -10C
         259.9...
     """
     # Auto-select ice/water based on temperature
@@ -73,9 +140,9 @@ def saturation_pressure(t: float, *, ice: bool = False) -> float:
     t_k = celsius_to_kelvin(t)
 
     if ice:
-        # Valid range: -100°C to 0°C
+        # Valid range: -100C to 0C
         if t < -100 or t > 0:
-            msg = f"Temperature {t}°C outside valid range for ice [-100, 0]"
+            msg = f"Temperature {t}C outside valid range for ice [-100, 0]"
             raise ValueError(msg)
 
         # ASHRAE equation 5 (over ice)
@@ -89,9 +156,9 @@ def saturation_pressure(t: float, *, ice: bool = False) -> float:
             + SAT_PRESSURE_ICE_C7 * math.log(t_k)
         )
     else:
-        # Valid range: 0°C to 200°C
+        # Valid range: 0C to 200C
         if t < 0 or t > 200:
-            msg = f"Temperature {t}°C outside valid range for water [0, 200]"
+            msg = f"Temperature {t}C outside valid range for water [0, 200]"
             raise ValueError(msg)
 
         # ASHRAE equation 6 (over water)
@@ -114,12 +181,12 @@ def humidity_ratio(
 ) -> float:
     """Calculate humidity ratio from temperature and relative humidity.
 
-    ASHRAE Handbook—Fundamentals, Chapter 1, Equation 22.
+    ASHRAE Handbook-Fundamentals, Chapter 1, Equation 22.
 
     The humidity ratio W is the mass of water vapor per unit mass of dry air.
 
     Args:
-        t: Dry-bulb temperature in °C.
+        t: Dry-bulb temperature in C.
         rh: Relative humidity as percentage (0-100).
         p: Total atmospheric pressure in Pa.
 
@@ -130,9 +197,9 @@ def humidity_ratio(
         ValueError: If relative humidity is outside [0, 100].
 
     Examples:
-        >>> humidity_ratio(20.0, 50.0)  # 20°C, 50% RH
+        >>> humidity_ratio(20.0, 50.0)  # 20C, 50% RH
         0.00727...
-        >>> humidity_ratio(30.0, 80.0)  # 30°C, 80% RH
+        >>> humidity_ratio(30.0, 80.0)  # 30C, 80% RH
         0.02162...
     """
     if not 0 <= rh <= 100:
@@ -161,11 +228,11 @@ def humidity_ratio_from_wet_bulb(
 ) -> float:
     """Calculate humidity ratio from dry-bulb and wet-bulb temperatures.
 
-    ASHRAE Handbook—Fundamentals, Chapter 1, Equation 35.
+    ASHRAE Handbook-Fundamentals, Chapter 1, Equation 35.
 
     Args:
-        t_db: Dry-bulb temperature in °C.
-        t_wb: Wet-bulb temperature in °C.
+        t_db: Dry-bulb temperature in C.
+        t_wb: Wet-bulb temperature in C.
         p: Total atmospheric pressure in Pa.
 
     Returns:
@@ -175,23 +242,38 @@ def humidity_ratio_from_wet_bulb(
         ValueError: If wet-bulb exceeds dry-bulb temperature.
     """
     if t_wb > t_db:
-        msg = f"Wet-bulb {t_wb}°C cannot exceed dry-bulb {t_db}°C"
+        msg = f"Wet-bulb {t_wb}C cannot exceed dry-bulb {t_db}C"
         raise ValueError(msg)
 
     # Saturation humidity ratio at wet-bulb temperature
     w_s_wb = humidity_ratio(t_wb, 100.0, p)
 
-    # ASHRAE psychrometric equation (simplified form)
-    # For temperatures above 0°C
+    # ASHRAE psychrometric equation (Equation 35)
+    # M2 Fix: Using named constants instead of magic numbers
+    # For temperatures above 0C (over water):
+    #   W = ((2501 - 2.326*t_wb)*W_s - 1.006*(t_db - t_wb)) /
+    #       (2501 + 1.86*t_db - 4.186*t_wb)
     if t_wb >= 0:
-        w = ((2501 - 2.326 * t_wb) * w_s_wb - 1.006 * (t_db - t_wb)) / (
-            2501 + 1.86 * t_db - 4.186 * t_wb
+        numerator = (
+            _LATENT_HEAT_0C_KJ - _LATENT_HEAT_COEF_WATER * t_wb
+        ) * w_s_wb - _CP_DRY_AIR_KJ * (t_db - t_wb)
+        denominator = (
+            _LATENT_HEAT_0C_KJ + _CP_WATER_VAPOR_KJ * t_db - _CP_LIQUID_WATER_KJ * t_wb
         )
+        w = numerator / denominator
     else:
-        # Below freezing (uses ice)
-        w = ((2830 - 0.24 * t_wb) * w_s_wb - 1.006 * (t_db - t_wb)) / (
-            2830 + 1.86 * t_db - 2.1 * t_wb
+        # Below freezing (uses ice constants)
+        # W = ((2830 - 0.24*t_wb)*W_s - 1.006*(t_db - t_wb)) /
+        #     (2830 + 1.86*t_db - 2.1*t_wb)
+        numerator = (
+            _LATENT_HEAT_SUBLIMATION_0C_KJ - _LATENT_HEAT_COEF_ICE * t_wb
+        ) * w_s_wb - _CP_DRY_AIR_KJ * (t_db - t_wb)
+        denominator = (
+            _LATENT_HEAT_SUBLIMATION_0C_KJ
+            + _CP_WATER_VAPOR_KJ * t_db
+            - _CP_ICE_KJ * t_wb
         )
+        w = numerator / denominator
 
     return max(0.0, w)
 
@@ -206,7 +288,7 @@ def relative_humidity(
     Inverse of humidity_ratio function.
 
     Args:
-        t: Dry-bulb temperature in °C.
+        t: Dry-bulb temperature in C.
         w: Humidity ratio in kg_water/kg_dry_air.
         p: Total atmospheric pressure in Pa.
 
@@ -235,20 +317,20 @@ def wet_bulb_temperature(
 ) -> float:
     """Calculate wet-bulb temperature using iterative method.
 
-    ASHRAE Handbook—Fundamentals, Chapter 1.
+    ASHRAE Handbook-Fundamentals, Chapter 1.
 
     Uses bisection method to find wet-bulb temperature that satisfies
     the psychrometric equation.
 
     Args:
-        t: Dry-bulb temperature in °C.
+        t: Dry-bulb temperature in C.
         rh: Relative humidity as percentage (0-100).
         p: Total atmospheric pressure in Pa.
-        tol: Convergence tolerance in °C.
+        tol: Convergence tolerance in C.
         max_iter: Maximum iterations for convergence.
 
     Returns:
-        Wet-bulb temperature in °C.
+        Wet-bulb temperature in C.
 
     Raises:
         RuntimeError: If iteration fails to converge.
@@ -257,8 +339,10 @@ def wet_bulb_temperature(
     w_target = humidity_ratio(t, rh, p)
 
     # Wet-bulb is between dew point and dry-bulb
-    # Use bisection method
-    t_low = dew_point(t, rh) - 1  # Start slightly below dew point
+    # Use bisection method with safe lower bound
+    # The dew point can be very low at low RH, so we clamp to a reasonable minimum
+    t_dew = dew_point(t, rh)
+    t_low = max(_WET_BULB_MIN_TEMP, t_dew - 1)  # Start slightly below dew point
     t_high = t
 
     for _ in range(max_iter):
@@ -267,7 +351,13 @@ def wet_bulb_temperature(
         # Calculate humidity ratio at this wet-bulb guess
         w_calc = humidity_ratio_from_wet_bulb(t, t_mid, p)
 
-        if abs(w_calc - w_target) < tol * max(w_target, 0.001):
+        # M5 Fix: Use absolute tolerance floor for very dry air conditions
+        # When w_target is very small (dry air), the relative tolerance
+        # tol * w_target could become too small for meaningful comparison.
+        # Using max(tol * w_target, _HUMIDITY_RATIO_MIN_TOL) ensures
+        # numerical stability across all humidity conditions.
+        effective_tol = max(tol * w_target, _HUMIDITY_RATIO_MIN_TOL)
+        if abs(w_calc - w_target) < effective_tol:
             return t_mid
 
         if w_calc < w_target:
@@ -283,14 +373,14 @@ def dew_point(t: float, rh: float) -> float:
     """Calculate dew point temperature.
 
     Uses Magnus-Tetens approximation for simplicity.
-    ASHRAE Handbook—Fundamentals provides more complex formulations.
+    ASHRAE Handbook-Fundamentals provides more complex formulations.
 
     Args:
-        t: Dry-bulb temperature in °C.
+        t: Dry-bulb temperature in C.
         rh: Relative humidity as percentage (0-100).
 
     Returns:
-        Dew point temperature in °C.
+        Dew point temperature in C.
 
     Raises:
         ValueError: If relative humidity is outside valid range.
@@ -303,7 +393,7 @@ def dew_point(t: float, rh: float) -> float:
 
     # Magnus-Tetens coefficients
     a = 17.27
-    b = 237.7  # °C
+    b = 237.7  # C
 
     # Intermediate calculation
     alpha = (a * t / (b + t)) + math.log(rh / 100.0)
@@ -325,7 +415,7 @@ def dew_point_from_humidity_ratio(
         p: Total atmospheric pressure in Pa.
 
     Returns:
-        Dew point temperature in °C.
+        Dew point temperature in C.
     """
     # Partial pressure of water vapor
     p_w = p * w / (EPSILON + w)
@@ -352,12 +442,12 @@ def dew_point_from_humidity_ratio(
 def enthalpy(t: float, w: float) -> float:
     """Calculate specific enthalpy of moist air.
 
-    ASHRAE Handbook—Fundamentals, Chapter 1, Equation 32.
+    ASHRAE Handbook-Fundamentals, Chapter 1, Equation 32.
 
-    The reference state is dry air at 0°C and liquid water at 0°C.
+    The reference state is dry air at 0C and liquid water at 0C.
 
     Args:
-        t: Dry-bulb temperature in °C.
+        t: Dry-bulb temperature in C.
         w: Humidity ratio in kg_water/kg_dry_air.
 
     Returns:
@@ -372,8 +462,8 @@ def enthalpy(t: float, w: float) -> float:
     # ASHRAE Equation 32
     # h = 1.006*t + w*(2501 + 1.86*t)
     # Result in kJ/kg_da
-
-    h = 1.006 * t + w * (2501 + 1.86 * t)
+    # M2 Fix: Using named constants
+    h = _CP_DRY_AIR_KJ * t + w * (_LATENT_HEAT_0C_KJ + _CP_WATER_VAPOR_KJ * t)
     return h
 
 
@@ -384,15 +474,15 @@ def air_density(
 ) -> float:
     """Calculate density of moist air.
 
-    ASHRAE Handbook—Fundamentals, Chapter 1, Equation 28.
+    ASHRAE Handbook-Fundamentals, Chapter 1, Equation 28.
 
     Args:
-        t: Dry-bulb temperature in °C.
+        t: Dry-bulb temperature in C.
         w: Humidity ratio in kg_water/kg_dry_air.
         p: Total atmospheric pressure in Pa.
 
     Returns:
-        Density in kg/m³ (of moist air, not dry air).
+        Density in kg/m3 (of moist air, not dry air).
 
     Examples:
         >>> air_density(20.0, 0.0074)  # Typical indoor conditions
@@ -402,9 +492,18 @@ def air_density(
     """
     t_k = celsius_to_kelvin(t)
 
-    # ASHRAE Equation 28
-    # ρ = p / (R_da * T * (1 + 1.6078 * W))
-    rho = p / (GAS_CONSTANT_DRY_AIR * t_k * (1 + 1.6078 * w))
+    # ASHRAE Equation 28 for moist air density
+    # rho = p / (R_da * T * (1 + 1.6078 * W))
+    #
+    # The factor 1.6078 accounts for the difference in molecular weight between
+    # dry air and water vapor:
+    #   1.6078 = (M_air / M_water) - 1 = (28.966 / 18.015) - 1
+    #
+    # This correction factor appears because moist air is less dense than dry
+    # air at the same temperature and pressure, due to water vapor's lower
+    # molecular weight.
+    # Reference: ASHRAE Handbook-Fundamentals (2021), Chapter 1, Equation 28
+    rho = p / (GAS_CONSTANT_DRY_AIR * t_k * (1 + _MOLECULAR_WEIGHT_RATIO_FACTOR * w))
 
     return rho
 
@@ -416,20 +515,22 @@ def specific_volume(
 ) -> float:
     """Calculate specific volume of moist air.
 
-    ASHRAE Handbook—Fundamentals, Chapter 1, Equation 28.
+    ASHRAE Handbook-Fundamentals, Chapter 1, Equation 28.
 
     Args:
-        t: Dry-bulb temperature in °C.
+        t: Dry-bulb temperature in C.
         w: Humidity ratio in kg_water/kg_dry_air.
         p: Total atmospheric pressure in Pa.
 
     Returns:
-        Specific volume in m³/kg_dry_air.
+        Specific volume in m3/kg_dry_air.
     """
     t_k = celsius_to_kelvin(t)
 
-    # ASHRAE Equation 28
-    v = GAS_CONSTANT_DRY_AIR * t_k * (1 + 1.6078 * w) / p
+    # ASHRAE Equation 28 (inverted for specific volume)
+    # The 1.6078 factor is explained in air_density() - see
+    # _MOLECULAR_WEIGHT_RATIO_FACTOR constant definition.
+    v = GAS_CONSTANT_DRY_AIR * t_k * (1 + _MOLECULAR_WEIGHT_RATIO_FACTOR * w) / p
 
     return v
 
@@ -459,26 +560,26 @@ def adiabatic_saturation_temperature(
     thermodynamic wet-bulb temperature.
 
     Args:
-        t: Dry-bulb temperature in °C.
+        t: Dry-bulb temperature in C.
         rh: Relative humidity as percentage (0-100).
         p: Total atmospheric pressure in Pa.
 
     Returns:
-        Adiabatic saturation temperature in °C.
+        Adiabatic saturation temperature in C.
     """
     return wet_bulb_temperature(t, rh, p)
 
 
 def degree_of_saturation(t: float, rh: float, p: float = STANDARD_PRESSURE) -> float:
-    """Calculate degree of saturation (μ).
+    """Calculate degree of saturation (mu).
 
-    ASHRAE Handbook—Fundamentals, Chapter 1, Equation 12.
+    ASHRAE Handbook-Fundamentals, Chapter 1, Equation 12.
 
     The degree of saturation is the ratio of humidity ratio to
     the saturation humidity ratio at the same temperature.
 
     Args:
-        t: Dry-bulb temperature in °C.
+        t: Dry-bulb temperature in C.
         rh: Relative humidity as percentage (0-100).
         p: Total atmospheric pressure in Pa.
 
@@ -498,7 +599,7 @@ def vapor_pressure(t: float, rh: float) -> float:
     """Calculate partial pressure of water vapor.
 
     Args:
-        t: Dry-bulb temperature in °C.
+        t: Dry-bulb temperature in C.
         rh: Relative humidity as percentage (0-100).
 
     Returns:
@@ -511,10 +612,10 @@ def vapor_pressure(t: float, rh: float) -> float:
 def latent_heat_of_vaporization(t: float) -> float:
     """Calculate latent heat of vaporization as function of temperature.
 
-    Linear approximation valid for 0-100°C range.
+    Linear approximation valid for 0-100C range.
 
     Args:
-        t: Temperature in °C.
+        t: Temperature in C.
 
     Returns:
         Latent heat of vaporization in J/kg.

@@ -15,7 +15,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+
 if TYPE_CHECKING:
+    from numpy.random import Generator
+
     from cloudgrow_sim.core.state import GreenhouseState
 
 
@@ -81,6 +85,7 @@ class Sensor(Component):
     Attributes:
         location: Where the sensor is placed ('interior', 'exterior', etc.).
         noise_std_dev: Standard deviation of Gaussian measurement noise.
+        rng: Random number generator for reproducible noise.
     """
 
     def __init__(
@@ -90,6 +95,8 @@ class Sensor(Component):
         *,
         noise_std_dev: float = 0.0,
         enabled: bool = True,
+        rng: Generator | None = None,
+        seed: int | None = None,
     ) -> None:
         """Initialize sensor.
 
@@ -98,11 +105,23 @@ class Sensor(Component):
             location: Sensor placement location.
             noise_std_dev: Measurement noise standard deviation.
             enabled: Whether this sensor is active.
+            rng: NumPy random generator for reproducible simulations.
+                If None and seed is provided, creates a new generator.
+                If both None, creates a default generator (non-deterministic).
+            seed: Seed for creating a new random generator if rng is None.
         """
         super().__init__(name, enabled=enabled)
         self._location = location
         self._noise_std_dev = noise_std_dev
         self._last_reading: dict[str, float] = {}
+
+        # Initialize random generator for reproducible noise
+        if rng is not None:
+            self._rng = rng
+        elif seed is not None:
+            self._rng = np.random.default_rng(seed)
+        else:
+            self._rng = np.random.default_rng()
 
     @property
     def location(self) -> str:
@@ -118,6 +137,26 @@ class Sensor(Component):
     def last_reading(self) -> dict[str, float]:
         """Most recent sensor reading."""
         return self._last_reading.copy()
+
+    @property
+    def rng(self) -> Generator:
+        """Random number generator for noise generation."""
+        return self._rng
+
+    def _add_noise(self, value: float, std_dev: float | None = None) -> float:
+        """Add Gaussian noise to a value.
+
+        Args:
+            value: The true value to add noise to.
+            std_dev: Standard deviation override. Uses noise_std_dev if None.
+
+        Returns:
+            Value with added noise.
+        """
+        sigma = std_dev if std_dev is not None else self._noise_std_dev
+        if sigma > 0:
+            return float(value + self._rng.normal(0, sigma))
+        return value
 
     @abstractmethod
     def read(self, state: GreenhouseState) -> dict[str, float]:

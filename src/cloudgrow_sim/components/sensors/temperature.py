@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import random
-
 from cloudgrow_sim.core.base import Sensor
 from cloudgrow_sim.core.registry import register_component
 from cloudgrow_sim.core.state import GreenhouseState
@@ -19,7 +17,7 @@ class TemperatureSensor(Sensor):
     Attributes:
         name: Unique sensor identifier.
         location: 'interior' or 'exterior'.
-        noise_std_dev: Standard deviation of measurement noise in °C.
+        noise_std_dev: Standard deviation of measurement noise in C.
     """
 
     def read(self, state: GreenhouseState) -> dict[str, float]:
@@ -29,18 +27,14 @@ class TemperatureSensor(Sensor):
             state: Current greenhouse state.
 
         Returns:
-            Dictionary with 'temperature' key in °C.
+            Dictionary with 'temperature' key in C.
         """
         if self.location == "exterior":
             true_value = state.exterior.temperature
         else:
             true_value = state.interior.temperature
 
-        # Add measurement noise
-        if self.noise_std_dev > 0:
-            noise = random.gauss(0, self.noise_std_dev)
-            measured = true_value + noise
-        else:
-            measured = true_value
+        # Add measurement noise using the base class method
+        measured = self._add_noise(true_value)
 
         return {"temperature": measured}
