@@ -168,12 +168,44 @@ class EventBus:
             return True
         return False
 
+    def _invoke_handler(
+        self,
+        handler: EventHandler,
+        event: Event,
+        event_key: str,
+    ) -> None:
+        """Invoke a single event handler with proper exception handling.
+
+        Logs handler exceptions but does not prevent other handlers from
+        being called. Re-raises KeyboardInterrupt and SystemExit to allow
+        clean shutdowns.
+
+        Args:
+            handler: The event handler to invoke.
+            event: The event to pass to the handler.
+            event_key: The event type key for logging purposes.
+        """
+        try:
+            handler(event)
+        except (KeyboardInterrupt, SystemExit):
+            # Re-raise to allow clean shutdown
+            raise
+        except Exception:
+            handler_name = getattr(handler, "__name__", str(handler))
+            logger.exception(
+                "Event handler '%s' failed processing %s event from %s",
+                handler_name,
+                event_key,
+                event.source,
+            )
+
     def emit(self, event: Event) -> None:
         """Emit an event to all subscribers.
 
         Handler exceptions are logged but do not prevent other handlers from
         being called. This ensures one buggy handler doesn't break the entire
-        event system.
+        event system. KeyboardInterrupt and SystemExit are re-raised to allow
+        clean shutdowns.
 
         Args:
             event: The event to emit.
@@ -190,29 +222,11 @@ class EventBus:
 
         # Notify specific handlers
         for handler in self._handlers[event_key]:
-            try:
-                handler(event)
-            except Exception:
-                handler_name = getattr(handler, "__name__", str(handler))
-                logger.exception(
-                    "Event handler '%s' failed processing %s event from %s",
-                    handler_name,
-                    event_key,
-                    event.source,
-                )
+            self._invoke_handler(handler, event, event_key)
 
         # Notify wildcard handlers
         for handler in self._handlers["*"]:
-            try:
-                handler(event)
-            except Exception:
-                handler_name = getattr(handler, "__name__", str(handler))
-                logger.exception(
-                    "Event handler '%s' failed processing %s event from %s",
-                    handler_name,
-                    event_key,
-                    event.source,
-                )
+            self._invoke_handler(handler, event, event_key)
 
     def emit_simple(
         self,
