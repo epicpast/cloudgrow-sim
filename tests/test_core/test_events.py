@@ -316,3 +316,70 @@ class TestConvenienceFunctions:
 
         assert len(received) == 1
         assert received[0].message == "Temperature too high!"
+
+
+class TestEventBusRobustness:
+    """Tests for EventBus error handling and edge cases."""
+
+    def test_history_fifo_behavior(self) -> None:
+        """Oldest events are removed first when history fills (deque FIFO)."""
+        bus = EventBus(max_history=3)
+
+        bus.emit(Event(event_type=EventType.SIMULATION_START, data={"order": 1}))
+        bus.emit(Event(event_type=EventType.SIMULATION_STEP, data={"order": 2}))
+        bus.emit(Event(event_type=EventType.SIMULATION_STEP, data={"order": 3}))
+        bus.emit(Event(event_type=EventType.SIMULATION_STOP, data={"order": 4}))
+
+        history = bus.get_history()
+        assert len(history) == 3
+        # Should have events 2, 3, 4 (oldest event 1 removed)
+        assert history[0].data["order"] == 2
+        assert history[1].data["order"] == 3
+        assert history[2].data["order"] == 4
+
+    def test_handler_exception_does_not_stop_other_handlers(self) -> None:
+        """A failing handler doesn't prevent other handlers from running."""
+        bus = EventBus()
+        results: list[str] = []
+
+        def good_handler_1(event: Event) -> None:
+            results.append("handler1")
+
+        def bad_handler(event: Event) -> None:
+            raise ValueError("Handler failure!")
+
+        def good_handler_2(event: Event) -> None:
+            results.append("handler2")
+
+        bus.subscribe(EventType.SIMULATION_START, good_handler_1)
+        bus.subscribe(EventType.SIMULATION_START, bad_handler)
+        bus.subscribe(EventType.SIMULATION_START, good_handler_2)
+
+        # Should not raise, and all good handlers should run
+        bus.emit(Event(event_type=EventType.SIMULATION_START))
+
+        assert "handler1" in results
+        assert "handler2" in results
+
+    def test_wildcard_handler_exception_isolated(self) -> None:
+        """Wildcard handler exceptions don't affect other handlers."""
+        bus = EventBus()
+        results: list[str] = []
+
+        def specific_handler(event: Event) -> None:
+            results.append("specific")
+
+        def bad_wildcard(event: Event) -> None:
+            raise RuntimeError("Wildcard failure!")
+
+        def good_wildcard(event: Event) -> None:
+            results.append("wildcard")
+
+        bus.subscribe(EventType.SIMULATION_START, specific_handler)
+        bus.subscribe_all(bad_wildcard)
+        bus.subscribe_all(good_wildcard)
+
+        bus.emit(Event(event_type=EventType.SIMULATION_START))
+
+        assert "specific" in results
+        assert "wildcard" in results

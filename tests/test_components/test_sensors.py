@@ -259,3 +259,68 @@ class TestSensorUpdate:
         sensor.update(1.0, sample_state)
 
         assert sensor.last_reading == {}
+
+
+class TestSensorReproducibility:
+    """Tests for sensor RNG reproducibility."""
+
+    def test_seed_produces_reproducible_results(
+        self, sample_state: GreenhouseState
+    ) -> None:
+        """Same seed produces identical noise sequences."""
+        sensor1 = TemperatureSensor("temp1", noise_std_dev=0.5, seed=42)
+        sensor2 = TemperatureSensor("temp2", noise_std_dev=0.5, seed=42)
+
+        readings1 = [sensor1.read(sample_state)["temperature"] for _ in range(10)]
+        readings2 = [sensor2.read(sample_state)["temperature"] for _ in range(10)]
+
+        assert readings1 == readings2
+
+    def test_different_seeds_produce_different_results(
+        self, sample_state: GreenhouseState
+    ) -> None:
+        """Different seeds produce different noise sequences."""
+        sensor1 = TemperatureSensor("temp1", noise_std_dev=0.5, seed=42)
+        sensor2 = TemperatureSensor("temp2", noise_std_dev=0.5, seed=99)
+
+        readings1 = [sensor1.read(sample_state)["temperature"] for _ in range(10)]
+        readings2 = [sensor2.read(sample_state)["temperature"] for _ in range(10)]
+
+        assert readings1 != readings2
+
+    def test_shared_rng_across_sensors(self, sample_state: GreenhouseState) -> None:
+        """Multiple sensors can share same RNG for coordinated randomness."""
+        import numpy as np
+
+        shared_rng = np.random.default_rng(42)
+
+        sensor1 = TemperatureSensor("temp1", noise_std_dev=0.5, rng=shared_rng)
+        sensor2 = HumiditySensor("hum1", noise_std_dev=1.0, rng=shared_rng)
+
+        # Both should use same RNG
+        assert sensor1.rng is shared_rng
+        assert sensor2.rng is shared_rng
+
+        # Both draw from same sequence
+        _ = sensor1.read(sample_state)
+        _ = sensor2.read(sample_state)
+
+    def test_add_noise_with_zero_std_returns_exact_value(self) -> None:
+        """_add_noise returns exact value when std_dev is 0."""
+        sensor = TemperatureSensor("temp", noise_std_dev=0.0)
+        assert sensor._add_noise(25.0) == 25.0
+        assert sensor._add_noise(25.0, std_dev=0.0) == 25.0
+
+    def test_add_noise_with_override_std_dev(self) -> None:
+        """_add_noise uses override std_dev when provided."""
+        sensor = TemperatureSensor("temp", noise_std_dev=0.0, seed=42)
+        # With override, should add noise
+        value_with_noise = sensor._add_noise(25.0, std_dev=1.0)
+        assert value_with_noise != 25.0
+
+    def test_rng_property_returns_generator(self) -> None:
+        """rng property returns the random generator."""
+        import numpy as np
+
+        sensor = TemperatureSensor("temp", seed=42)
+        assert isinstance(sensor.rng, np.random.Generator)
