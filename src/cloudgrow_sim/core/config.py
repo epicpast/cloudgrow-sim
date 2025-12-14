@@ -25,7 +25,14 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from cloudgrow_sim.core.state import (
     COVERING_MATERIALS,
@@ -258,8 +265,12 @@ class WeatherConfig(BaseModel):
     temperature_amplitude: float = 10.0
 
     # Home Assistant integration
+    # SEC-2 Fix: Use SecretStr to prevent token exposure in logs/serialization
     ha_url: str | None = Field(default=None, description="Home Assistant URL")
-    ha_token: str | None = Field(default=None, description="HA long-lived access token")
+    ha_token: SecretStr | None = Field(
+        default=None,
+        description="HA long-lived access token (stored securely)",
+    )
     ha_sensors: dict[str, str] = Field(
         default_factory=dict,
         description="Mapping: property -> HA entity_id",
@@ -273,7 +284,11 @@ class InfluxDBConfig(BaseModel):
     url: str = "http://localhost:8086"
     org: str = ""
     bucket: str = ""
-    token: str | None = Field(default=None, description="InfluxDB API token")
+    # SEC-2 Fix: Use SecretStr to prevent token exposure in logs/serialization
+    token: SecretStr | None = Field(
+        default=None,
+        description="InfluxDB API token (stored securely)",
+    )
 
 
 class CSVOutputConfig(BaseModel):
@@ -354,6 +369,12 @@ def load_config(path: str | Path) -> SimulationConfig:
 
     with path.open() as f:
         if path.suffix in (".yaml", ".yml"):
+            # SECURITY: yaml.safe_load() is required here to prevent arbitrary
+            # code execution. Never use yaml.load() with untrusted input as it
+            # can instantiate arbitrary Python objects, leading to remote code
+            # execution vulnerabilities (CVE-2017-18342 and similar).
+            # safe_load() only supports basic YAML types (strings, numbers,
+            # lists, dicts) which is sufficient for configuration files.
             data = yaml.safe_load(f)
         else:
             import json
@@ -365,6 +386,10 @@ def load_config(path: str | Path) -> SimulationConfig:
 
 def save_config(config: SimulationConfig, path: str | Path) -> None:
     """Save simulation configuration to YAML or JSON file.
+
+    Note: SecretStr fields (ha_token, influxdb.token) will be serialized
+    as '**********' by default. Use model_dump(mode="json") to get the
+    actual values if needed, but be careful about security implications.
 
     Args:
         config: Configuration to save.

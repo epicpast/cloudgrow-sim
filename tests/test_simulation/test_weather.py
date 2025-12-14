@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,6 +15,7 @@ from cloudgrow_sim.simulation.weather import (
     SyntheticWeatherConfig,
     SyntheticWeatherSource,
     WeatherConditions,
+    _validate_csv_path,
 )
 
 
@@ -150,6 +152,165 @@ class TestSyntheticWeatherSource:
         assert max(winds) > min(winds)
         # All non-negative
         assert all(w >= 0 for w in winds)
+
+
+class TestCSVPathValidation:
+    """Tests for CSV path validation security checks."""
+
+    def test_valid_csv_path(self) -> None:
+        """Valid CSV path passes validation."""
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            validated = _validate_csv_path(path)
+            assert validated == path.resolve()
+        finally:
+            path.unlink()
+
+    def test_invalid_extension_txt(self) -> None:
+        """Non-CSV extension rejected."""
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            with pytest.raises(ValueError, match="Invalid file extension"):
+                _validate_csv_path(path)
+        finally:
+            path.unlink()
+
+    def test_invalid_extension_json(self) -> None:
+        """JSON extension rejected."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            with pytest.raises(ValueError, match="Invalid file extension"):
+                _validate_csv_path(path)
+        finally:
+            path.unlink()
+
+    def test_path_traversal_etc(self) -> None:
+        """Path traversal to /etc blocked."""
+        # Note: This test creates a hypothetical path, not an actual file
+        path = Path("/etc/passwd.csv")
+        with pytest.raises(ValueError, match="system directory"):
+            _validate_csv_path(path)
+
+    def test_path_traversal_var(self) -> None:
+        """Path traversal to /var blocked."""
+        path = Path("/var/log/weather.csv")
+        with pytest.raises(ValueError, match="system directory"):
+            _validate_csv_path(path)
+
+    def test_uppercase_csv_allowed(self) -> None:
+        """Uppercase .CSV extension is allowed."""
+        with tempfile.NamedTemporaryFile(suffix=".CSV", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            validated = _validate_csv_path(path)
+            assert validated == path.resolve()
+        finally:
+            path.unlink()
+
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="Symlink tests require Unix-like OS with symlink support",
+    )
+    def test_symlink_bypass_blocked(self) -> None:
+        """SEC-1: Symlink pointing to sensitive location is blocked.
+
+        This tests the symlink bypass vulnerability fix where an attacker
+        could create a symlink named 'weather.csv' pointing to /etc/passwd.
+        The fix ensures we check the REAL target path, not just the symlink name.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a symlink that points to /etc/passwd but has .csv extension
+            symlink_path = Path(tmpdir) / "malicious.csv"
+
+            # Create symlink pointing to /etc/passwd
+            # The symlink itself has .csv extension but target is sensitive
+            try:
+                symlink_path.symlink_to("/etc/passwd")
+            except OSError:
+                pytest.skip("Cannot create symlinks (insufficient permissions)")
+
+            # The symlink is named .csv, but the REAL target is /etc/passwd
+            # which has no extension. This should be rejected - either by:
+            # 1. Invalid extension (no .csv on real path), or
+            # 2. System directory block (if it had .csv extension)
+            # Both outcomes are valid security blocks
+            with pytest.raises(ValueError):
+                _validate_csv_path(symlink_path)
+
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="Symlink tests require Unix-like OS with symlink support",
+    )
+    def test_symlink_to_sensitive_csv_blocked(self) -> None:
+        """SEC-1: Symlink to a .csv file in sensitive directory is blocked."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a symlink pointing to a hypothetical CSV in /etc
+            symlink_path = Path(tmpdir) / "config.csv"
+
+            try:
+                symlink_path.symlink_to("/etc/shadow.csv")
+            except OSError:
+                pytest.skip("Cannot create symlinks (insufficient permissions)")
+
+            # Should be blocked because real path is in /etc/
+            with pytest.raises(ValueError, match="system directory"):
+                _validate_csv_path(symlink_path)
+
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="Symlink tests require Unix-like OS with symlink support",
+    )
+    def test_symlink_to_valid_csv_allowed(self) -> None:
+        """Symlink to a valid CSV file should be allowed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a real CSV file
+            real_csv = Path(tmpdir) / "real_weather.csv"
+            real_csv.write_text("timestamp,temperature\n2025-01-01 00:00:00,20.0\n")
+
+            # Create a symlink to the real CSV
+            symlink_path = Path(tmpdir) / "link_weather.csv"
+            try:
+                symlink_path.symlink_to(real_csv)
+            except OSError:
+                pytest.skip("Cannot create symlinks (insufficient permissions)")
+
+            # This should pass because the real target is a valid CSV in a safe location
+            validated = _validate_csv_path(symlink_path)
+            # Should return the original resolved path (which follows symlinks)
+            assert validated.exists()
+
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="Symlink tests require Unix-like OS with symlink support",
+    )
+    def test_symlink_wrong_extension_on_target(self) -> None:
+        """Symlink to file with wrong extension should be rejected.
+
+        Even if the symlink has .csv extension, if the real file doesn't,
+        it should still work since we check the resolved path extension.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a .txt file
+            real_txt = Path(tmpdir) / "data.txt"
+            real_txt.write_text("some data\n")
+
+            # Create a symlink with .csv extension pointing to .txt file
+            symlink_path = Path(tmpdir) / "fake.csv"
+            try:
+                symlink_path.symlink_to(real_txt)
+            except OSError:
+                pytest.skip("Cannot create symlinks (insufficient permissions)")
+
+            # Should reject because the real target has .txt extension
+            with pytest.raises(ValueError, match="Invalid file extension"):
+                _validate_csv_path(symlink_path)
 
 
 class TestCSVWeatherSource:
@@ -317,5 +478,17 @@ class TestCSVWeatherSource:
             # Should return first data point values
             assert cond.temperature == 25.0
 
+        finally:
+            path.unlink()
+
+    def test_invalid_extension_rejected(self) -> None:
+        """CSVWeatherSource rejects non-CSV files."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("timestamp,temperature\n")
+            path = Path(f.name)
+
+        try:
+            with pytest.raises(ValueError, match="Invalid file extension"):
+                CSVWeatherSource(path)
         finally:
             path.unlink()

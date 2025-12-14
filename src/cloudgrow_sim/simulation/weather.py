@@ -12,6 +12,7 @@ All weather sources implement the WeatherSource protocol.
 from __future__ import annotations
 
 import csv
+import logging
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -22,6 +23,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+logger = logging.getLogger(__name__)
+
+# Allowed file extensions for CSV weather files
+_ALLOWED_CSV_EXTENSIONS: frozenset[str] = frozenset({".csv", ".CSV"})
+
 
 @dataclass
 class WeatherConditions:
@@ -29,9 +35,9 @@ class WeatherConditions:
 
     Attributes:
         timestamp: Time of the weather observation.
-        temperature: Air temperature in °C.
+        temperature: Air temperature in C.
         humidity: Relative humidity as percentage (0-100).
-        solar_radiation: Global horizontal irradiance in W/m².
+        solar_radiation: Global horizontal irradiance in W/m2.
         wind_speed: Wind speed in m/s.
         wind_direction: Wind direction in degrees from North.
         cloud_cover: Cloud cover fraction (0-1).
@@ -97,12 +103,12 @@ class SyntheticWeatherConfig:
 
     Attributes:
         latitude: Site latitude for day length calculations.
-        temp_mean: Mean annual temperature in °C.
-        temp_amplitude_annual: Annual temperature variation in °C.
-        temp_amplitude_daily: Daily temperature variation in °C.
+        temp_mean: Mean annual temperature in C.
+        temp_amplitude_annual: Annual temperature variation in C.
+        temp_amplitude_daily: Daily temperature variation in C.
         humidity_mean: Mean relative humidity (%).
         humidity_amplitude: Daily humidity variation (%).
-        solar_max: Maximum clear-sky solar radiation in W/m².
+        solar_max: Maximum clear-sky solar radiation in W/m2.
         wind_mean: Mean wind speed in m/s.
         wind_std: Wind speed standard deviation.
         cloud_cover_mean: Mean cloud cover (0-1).
@@ -273,6 +279,86 @@ class CSVWeatherMapping:
     precipitation: str = "precipitation"
 
 
+def _validate_csv_path(file_path: Path) -> Path:
+    """Validate and sanitize a CSV file path.
+
+    Performs security checks to prevent path traversal attacks and
+    symlink bypass attacks, and ensures the file has a valid CSV extension.
+
+    Security measures:
+    - Resolves path components (../) to prevent directory traversal
+    - Follows symlinks to check the real target path
+    - Blocks access to sensitive system directories
+
+    Args:
+        file_path: The path to validate.
+
+    Returns:
+        The resolved, validated path.
+
+    Raises:
+        ValueError: If the path is invalid, has wrong extension,
+                    or fails security checks.
+    """
+    # Resolve to absolute path to normalize any .. or . components
+    resolved_path = file_path.resolve()
+
+    # SEC-1 Fix: Follow symlinks to get the real target path
+    # This prevents symlink bypass attacks where a symlink named "weather.csv"
+    # could point to a sensitive file like /etc/passwd
+    try:
+        # resolve(strict=True) follows symlinks and raises FileNotFoundError
+        # if the target doesn't exist
+        real_path = resolved_path.resolve(strict=True)
+    except FileNotFoundError:
+        # File doesn't exist yet - use the resolved path for validation
+        # This is safe because we're checking the target path, not the symlink
+        real_path = resolved_path
+
+    # Check file extension on the real path
+    if real_path.suffix.lower() not in _ALLOWED_CSV_EXTENSIONS:
+        msg = (
+            f"Invalid file extension '{real_path.suffix}'. "
+            f"Only CSV files are allowed (extensions: {_ALLOWED_CSV_EXTENSIONS})"
+        )
+        raise ValueError(msg)
+
+    # Security check: Ensure resolved path doesn't escape to sensitive locations
+    # This prevents path traversal attacks like "../../etc/passwd"
+    # Check the REAL path (after following symlinks)
+    resolved_str = str(real_path)
+
+    # Block access to common sensitive system directories
+    # These patterns are specific enough to avoid blocking temp directories
+    # (e.g., /var/folders on macOS is allowed, but /var/log is not)
+    # The patterns use exact directory boundaries to be precise
+    sensitive_patterns = (
+        # Unix sensitive directories
+        "/etc/",
+        "/var/log/",
+        "/var/run/",
+        "/var/spool/",
+        "/var/cache/",
+        "/usr/",
+        "/bin/",
+        "/sbin/",
+        "/root/",
+        "/proc/",
+        "/sys/",
+        # Windows sensitive directories
+        "\\Windows\\",
+        "\\System32\\",
+        "\\Program Files\\",
+    )
+
+    for pattern in sensitive_patterns:
+        if pattern in resolved_str:
+            msg = f"Access to system directory not allowed: {real_path}"
+            raise ValueError(msg)
+
+    return resolved_path
+
+
 class CSVWeatherSource(WeatherSource):
     """Load weather data from CSV files.
 
@@ -292,12 +378,17 @@ class CSVWeatherSource(WeatherSource):
             file_path: Path to CSV file.
             mapping: Column name mapping.
             timestamp_format: strptime format for timestamp column.
+
+        Raises:
+            ValueError: If file path is invalid or has wrong extension.
         """
-        self.file_path = Path(file_path)
+        # H3 Fix: Validate and sanitize path to prevent traversal attacks
+        self.file_path = _validate_csv_path(Path(file_path))
         self.mapping = mapping or CSVWeatherMapping()
         self.timestamp_format = timestamp_format
         self._data: list[WeatherConditions] = []
         self._loaded = False
+        self._skipped_rows = 0
 
     def _load_data(self) -> None:
         """Load and parse CSV file."""
@@ -305,11 +396,12 @@ class CSVWeatherSource(WeatherSource):
             return
 
         self._data = []
+        self._skipped_rows = 0
 
         with self.file_path.open(newline="") as f:
             reader = csv.DictReader(f)
 
-            for row in reader:
+            for row_num, row in enumerate(reader, start=2):  # Start at 2 (header is 1)
                 try:
                     timestamp = datetime.strptime(
                         row[self.mapping.timestamp],
@@ -332,12 +424,34 @@ class CSVWeatherSource(WeatherSource):
                         precipitation=float(row.get(self.mapping.precipitation, 0.0)),
                     )
                     self._data.append(conditions)
-                except (KeyError, ValueError):
-                    continue  # Skip malformed rows
+                except KeyError as e:
+                    self._skipped_rows += 1
+                    logger.warning(
+                        "Skipping row %d in %s: missing column %s",
+                        row_num,
+                        self.file_path,
+                        e,
+                    )
+                except ValueError as e:
+                    self._skipped_rows += 1
+                    logger.warning(
+                        "Skipping row %d in %s: invalid value - %s",
+                        row_num,
+                        self.file_path,
+                        e,
+                    )
 
         # Sort by timestamp
         self._data.sort(key=lambda c: c.timestamp)
         self._loaded = True
+
+        if self._skipped_rows > 0:
+            logger.info(
+                "Loaded %d weather records from %s (%d rows skipped)",
+                len(self._data),
+                self.file_path,
+                self._skipped_rows,
+            )
 
     def _find_bracketing_indices(
         self, timestamp: datetime
@@ -465,6 +579,12 @@ class CSVWeatherSource(WeatherSource):
         if not self._data:
             return None
         return self._data[0].timestamp, self._data[-1].timestamp
+
+    @property
+    def skipped_rows(self) -> int:
+        """Number of rows skipped during loading due to errors."""
+        self._load_data()
+        return self._skipped_rows
 
     def __len__(self) -> int:
         """Number of data points loaded."""
