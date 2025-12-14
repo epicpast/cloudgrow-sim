@@ -465,9 +465,7 @@ class CSVWeatherSource(WeatherSource):
                         temperature=get_float_or_default(
                             row, self.mapping.temperature, 20.0
                         ),
-                        humidity=get_float_or_default(
-                            row, self.mapping.humidity, 50.0
-                        ),
+                        humidity=get_float_or_default(row, self.mapping.humidity, 50.0),
                         solar_radiation=get_float_or_default(
                             row, self.mapping.solar_radiation, 0.0
                         ),
