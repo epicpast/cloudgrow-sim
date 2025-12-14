@@ -397,6 +397,20 @@ class CSVWeatherSource(WeatherSource):
 
         self._data = []
         self._skipped_rows = 0
+        # Track columns that used defaults (log once per column, not per row)
+        columns_with_defaults: set[str] = set()
+
+        def get_float_or_default(
+            row: dict[str, str],
+            column: str,
+            default: float,
+        ) -> float:
+            """Get float value from row, logging if default is used."""
+            value = row.get(column)
+            if value is None:
+                columns_with_defaults.add(column)
+                return default
+            return float(value)
 
         with self.file_path.open(newline="") as f:
             reader = csv.DictReader(f)
@@ -410,18 +424,30 @@ class CSVWeatherSource(WeatherSource):
 
                     conditions = WeatherConditions(
                         timestamp=timestamp,
-                        temperature=float(row.get(self.mapping.temperature, 20.0)),
-                        humidity=float(row.get(self.mapping.humidity, 50.0)),
-                        solar_radiation=float(
-                            row.get(self.mapping.solar_radiation, 0.0)
+                        temperature=get_float_or_default(
+                            row, self.mapping.temperature, 20.0
                         ),
-                        wind_speed=float(row.get(self.mapping.wind_speed, 0.0)),
-                        wind_direction=float(
-                            row.get(self.mapping.wind_direction, 180.0)
+                        humidity=get_float_or_default(
+                            row, self.mapping.humidity, 50.0
                         ),
-                        cloud_cover=float(row.get(self.mapping.cloud_cover, 0.0)),
-                        pressure=float(row.get(self.mapping.pressure, 101325.0)),
-                        precipitation=float(row.get(self.mapping.precipitation, 0.0)),
+                        solar_radiation=get_float_or_default(
+                            row, self.mapping.solar_radiation, 0.0
+                        ),
+                        wind_speed=get_float_or_default(
+                            row, self.mapping.wind_speed, 0.0
+                        ),
+                        wind_direction=get_float_or_default(
+                            row, self.mapping.wind_direction, 180.0
+                        ),
+                        cloud_cover=get_float_or_default(
+                            row, self.mapping.cloud_cover, 0.0
+                        ),
+                        pressure=get_float_or_default(
+                            row, self.mapping.pressure, 101325.0
+                        ),
+                        precipitation=get_float_or_default(
+                            row, self.mapping.precipitation, 0.0
+                        ),
                     )
                     self._data.append(conditions)
                 except KeyError as e:
@@ -440,6 +466,15 @@ class CSVWeatherSource(WeatherSource):
                         self.file_path,
                         e,
                     )
+
+        # Log warning for any columns that used default values
+        if columns_with_defaults:
+            logger.warning(
+                "CSV file %s: columns not found, using defaults: %s. "
+                "Check CSVWeatherMapping if this is unexpected.",
+                self.file_path,
+                ", ".join(sorted(columns_with_defaults)),
+            )
 
         # Sort by timestamp
         self._data.sort(key=lambda c: c.timestamp)

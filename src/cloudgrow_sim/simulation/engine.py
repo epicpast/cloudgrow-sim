@@ -12,6 +12,7 @@ The engine orchestrates the simulation loop:
 
 from __future__ import annotations
 
+import traceback
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum
@@ -678,7 +679,7 @@ class SimulationEngine:
 
         except Exception as e:
             self._status = SimulationStatus.ERROR
-            self._emit_error_event(str(e))
+            self._emit_error_event(str(e), traceback.format_exc())
             raise
 
         finally:
@@ -712,14 +713,23 @@ class SimulationEngine:
             )
         )
 
-    def _emit_error_event(self, error: str) -> None:
-        """Emit simulation error event."""
+    def _emit_error_event(self, error: str, tb: str | None = None) -> None:
+        """Emit simulation error event.
+
+        Args:
+            error: Error message.
+            tb: Optional traceback string for debugging.
+        """
+        data: dict[str, Any] = {"error": error}
+        if tb is not None:
+            data["traceback"] = tb
+
         self._event_bus.emit(
             Event(
                 event_type=EventType.SIMULATION_ERROR,
                 timestamp=self._current_time,
                 source="engine",
-                data={"error": error},
+                data=data,
                 message=f"Simulation error: {error}",
             )
         )
