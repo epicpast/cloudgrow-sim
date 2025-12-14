@@ -12,10 +12,13 @@ with mypy strict mode.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from numpy.random import Generator
@@ -122,6 +125,12 @@ class Sensor(Component):
             self._rng = np.random.default_rng(seed)
         else:
             self._rng = np.random.default_rng()
+            if noise_std_dev > 0:
+                logger.debug(
+                    "Sensor '%s' using non-deterministic RNG (no seed provided). "
+                    "Set seed parameter for reproducible results.",
+                    name,
+                )
 
     @property
     def location(self) -> str:
