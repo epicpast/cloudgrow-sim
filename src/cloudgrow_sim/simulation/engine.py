@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from cloudgrow_sim.core.events import (
     Event,
@@ -25,6 +25,11 @@ from cloudgrow_sim.core.events import (
 from cloudgrow_sim.core.state import (
     AirState,
     GreenhouseState,
+)
+from cloudgrow_sim.physics.constants import (
+    C_P_DRY_AIR,
+    STANDARD_AIR_DENSITY,
+    STEFAN_BOLTZMANN,
 )
 from cloudgrow_sim.physics.heat_transfer import (
     conduction_heat_transfer,
@@ -50,6 +55,16 @@ class SimulationStatus(str, Enum):
     PAUSED = "paused"
     STOPPED = "stopped"
     ERROR = "error"
+
+
+# Maximum temperature change rate (C/s)
+# This physical limit prevents unrealistic temperature jumps during simulation.
+# Derivation: A well-insulated greenhouse with typical thermal mass (soil, plants,
+# structure) has a thermal time constant of 15-30 minutes. Even under extreme
+# conditions (full heating/cooling capacity), temperature changes rarely exceed
+# 0.1 C/s. This value acts as a safety bound for numerical stability.
+# Reference: ASHRAE Handbook - HVAC Applications (2019), Chapter 24
+_MAX_TEMP_CHANGE_RATE: float = 0.1  # C/s
 
 
 @dataclass
@@ -98,6 +113,34 @@ class SimulationStats:
         if self.steps_completed == 0:
             return 0.0
         return self.wall_time.total_seconds() * 1000 / self.steps_completed
+
+
+# Effective emissivity of greenhouse system for longwave radiation
+# This represents the combined effect of:
+# - Covering material emissivity (polyethylene ~0.8, glass ~0.9)
+# - Interior surface emissivity
+# - View factor to sky (typically 0.1-0.3 for gabled structures)
+# The low value (0.1) accounts for the covering reducing radiative heat loss.
+# Reference: ASHRAE Handbook-Fundamentals (2021), Chapter 4
+_GREENHOUSE_EFFECTIVE_EMISSIVITY: float = 0.1
+
+
+class ActuatorTotals(NamedTuple):
+    """Aggregated totals from all actuator effects.
+
+    Attributes:
+        ventilation_rate: Total ventilation rate in m^3/s.
+        heating: Total heating power in W.
+        cooling: Total evaporative cooling in W.
+        humidity_addition: Total humidity addition rate in kg/s.
+        co2_injection: Total CO2 injection rate in m^3/s of pure CO2.
+    """
+
+    ventilation_rate: float
+    heating: float
+    cooling: float
+    humidity_addition: float
+    co2_injection: float
 
 
 class SimulationEngine:
@@ -207,8 +250,22 @@ class SimulationEngine:
     def _execute_controllers(
         self, sensor_readings: dict[str, dict[str, float]]
     ) -> dict[str, float]:
-        """Execute all controllers and return outputs."""
-        del sensor_readings  # Reserved for future sensor-controller linkage
+        """Execute all controllers and return outputs.
+
+        Args:
+            sensor_readings: Dictionary of sensor readings (reserved for future use).
+                Currently unused but will enable sensor-to-controller linkage
+                for closed-loop control in a future version.
+                See: https://github.com/cloudgrow-sim/cloudgrow-sim/issues/42
+
+        Returns:
+            Dictionary mapping controller names to their output values.
+        """
+        # M1 Fix: Document the parameter's future purpose instead of just deleting.
+        # The sensor_readings parameter is intentionally accepted but unused,
+        # reserved for planned sensor-controller binding feature.
+        del sensor_readings  # Reserved for future sensor-controller linkage (issue #42)
+
         outputs: dict[str, float] = {}
 
         for controller in self._controllers:
@@ -232,25 +289,64 @@ class SimulationEngine:
 
         return effects
 
-    def _calculate_physics(self, actuator_effects: dict[str, dict[str, Any]]) -> None:
-        """Calculate physics and update interior state."""
-        dt = self._config.time_step
+    # =========================================================================
+    # Physics calculation methods (ARCH-3 refactoring)
+    # =========================================================================
+
+    def _aggregate_actuator_effects(
+        self, actuator_effects: dict[str, dict[str, Any]]
+    ) -> ActuatorTotals:
+        """Aggregate all actuator effects into totals.
+
+        Args:
+            actuator_effects: Dictionary of actuator effects keyed by actuator name.
+
+        Returns:
+            ActuatorTotals with summed values for each effect type.
+        """
+        total_ventilation = 0.0
+        total_heating = 0.0
+        total_cooling = 0.0
+        total_humidity = 0.0
+        total_co2 = 0.0
+
+        for effect in actuator_effects.values():
+            if "ventilation_rate" in effect:
+                total_ventilation += effect["ventilation_rate"]
+            if "heat_output" in effect:
+                total_heating += effect["heat_output"]
+            if "evaporative_cooling" in effect:
+                total_cooling += effect["evaporative_cooling"]
+            if "humidity_addition_rate" in effect:
+                total_humidity += effect["humidity_addition_rate"]
+            if "co2_injection_rate" in effect:
+                total_co2 += effect["co2_injection_rate"]
+
+        return ActuatorTotals(
+            ventilation_rate=total_ventilation,
+            heating=total_heating,
+            cooling=total_cooling,
+            humidity_addition=total_humidity,
+            co2_injection=total_co2,
+        )
+
+    def _calculate_heat_balance(self, totals: ActuatorTotals) -> float:
+        """Calculate net heat flux from all sources and sinks.
+
+        Includes solar gain, conduction loss, ventilation exchange,
+        sky radiation loss, and actuator heating/cooling.
+
+        Args:
+            totals: Aggregated actuator effect totals.
+
+        Returns:
+            Net heat flux in Watts (positive = heating).
+        """
         geom = self._state.geometry
         covering = self._state.covering
-
-        # Current interior state
         t_int = self._state.interior.temperature
-        rh_int = self._state.interior.humidity
-        co2_int = self._state.interior.co2_ppm
-
-        # Exterior conditions
         t_ext = self._state.exterior.temperature
         rh_ext = self._state.exterior.humidity
-        co2_ext = self._state.exterior.co2_ppm
-
-        # =========================================
-        # Heat balance
-        # =========================================
 
         # 1. Solar heat gain
         solar_transmitted = (
@@ -266,33 +362,30 @@ class SimulationEngine:
         )
 
         # 3. Ventilation heat exchange
-        total_ventilation_rate = 0.0
-        for effect in actuator_effects.values():
-            if "ventilation_rate" in effect:
-                total_ventilation_rate += effect["ventilation_rate"]
+        # Sensible heat from ventilation (Q = m_dot * cp * dT)
+        # Reference: ASHRAE Handbook-Fundamentals (2021), Chapter 18, Eq. 15
+        # Q_sensible = rho * V_dot * c_p * (T_in - T_out)
+        # where:
+        #   rho = air density (kg/m^3)
+        #   V_dot = volumetric flow rate (m^3/s)
+        #   c_p = specific heat of dry air (J/(kg*K))
+        #   T_in, T_out = inlet/outlet temperatures (C)
+        q_ventilation = (
+            totals.ventilation_rate
+            * STANDARD_AIR_DENSITY  # kg/m^3
+            * C_P_DRY_AIR  # J/(kg*K)
+            * (t_int - t_ext)  # temperature difference (C)
+        )
 
-        # Sensible heat from ventilation (Q = m * cp * dT)
-        # Assuming air density ~1.2 kg/m³, cp ~1005 J/(kg·K)
-        q_ventilation = total_ventilation_rate * 1.2 * 1005 * (t_int - t_ext)
-
-        # 4. Heating from actuators
-        total_heating = 0.0
-        for effect in actuator_effects.values():
-            if "heat_output" in effect:
-                total_heating += effect["heat_output"]
-
-        # 5. Evaporative cooling
-        total_cooling = 0.0
-        for effect in actuator_effects.values():
-            if "evaporative_cooling" in effect:
-                total_cooling += effect["evaporative_cooling"]
-
-        # 6. Sky radiation loss (simplified)
+        # 4. Sky radiation loss (Stefan-Boltzmann law)
+        # Reference: ASHRAE Handbook-Fundamentals (2021), Chapter 4
+        # Q_rad = epsilon * sigma * A * (T_surface^4 - T_sky^4)
+        # The effective sky temperature is calculated using the Berdahl-Fromberg
+        # correlation (see heat_transfer.sky_temperature)
         t_sky = sky_temperature(t_ext, rh_ext, cloud_cover=0.3)
-        # Simplified radiation loss through covering
         q_radiation = (
-            0.1  # Effective emissivity of system
-            * 5.67e-8  # Stefan-Boltzmann
+            _GREENHOUSE_EFFECTIVE_EMISSIVITY
+            * STEFAN_BOLTZMANN
             * geom.roof_area
             * ((t_int + 273.15) ** 4 - (t_sky + 273.15) ** 4)
         )
@@ -300,75 +393,143 @@ class SimulationEngine:
         # Net heat flux
         q_net = (
             solar_transmitted
-            + total_heating
+            + totals.heating
             - q_conduction
             - q_ventilation
             - q_radiation
-            - total_cooling
+            - totals.cooling
         )
 
-        # Temperature change: dT = Q * dt / (m * cp)
-        air_mass = geom.volume * 1.2  # kg
-        air_cp = 1005  # J/(kg·K)
-        dt_temp = q_net * dt / (air_mass * air_cp)
+        return q_net
 
-        # Limit temperature change rate and clamp to valid range
-        dt_temp = max(-5.0, min(5.0, dt_temp))
+    def _apply_temperature_change(self, q_net: float) -> float:
+        """Apply temperature change based on net heat flux.
+
+        Calculates temperature change using thermal mass and applies
+        rate limiting and clamping for physical realism.
+
+        Args:
+            q_net: Net heat flux in Watts.
+
+        Returns:
+            New interior temperature in degrees Celsius.
+        """
+        dt = self._config.time_step
+        geom = self._state.geometry
+        t_int = self._state.interior.temperature
+
+        # Temperature change: dT = Q * dt / (m * cp)
+        air_mass = geom.volume * STANDARD_AIR_DENSITY  # kg
+        dt_temp = q_net * dt / (air_mass * C_P_DRY_AIR)
+
+        # M4 Fix: Scale temperature change limit by time step
+        # Maximum change is proportional to dt, ensuring physically realistic
+        # behavior regardless of simulation time step size.
+        # At dt=60s: max change = 6.0 C (was fixed at 5.0 C)
+        # At dt=1s: max change = 0.1 C (physically realistic)
+        max_temp_change = _MAX_TEMP_CHANGE_RATE * dt
+        dt_temp = max(-max_temp_change, min(max_temp_change, dt_temp))
         new_temp = t_int + dt_temp
         new_temp = max(-50.0, min(60.0, new_temp))  # AirState valid range
 
-        # =========================================
-        # Moisture balance
-        # =========================================
+        return new_temp
+
+    def _calculate_moisture_balance(
+        self, totals: ActuatorTotals, new_temp: float
+    ) -> float:
+        """Calculate new relative humidity from moisture balance.
+
+        Accounts for ventilation moisture exchange and humidification.
+
+        Args:
+            totals: Aggregated actuator effect totals.
+            new_temp: New interior temperature for RH calculation.
+
+        Returns:
+            New relative humidity percentage (10-100%).
+        """
+        dt = self._config.time_step
+        geom = self._state.geometry
+        t_int = self._state.interior.temperature
+        rh_int = self._state.interior.humidity
+        t_ext = self._state.exterior.temperature
+        rh_ext = self._state.exterior.humidity
 
         # Current absolute humidity
         w_int = humidity_ratio(t_int, rh_int)
         w_ext = humidity_ratio(t_ext, rh_ext)
 
         # Moisture from ventilation
-        moisture_ventilation = total_ventilation_rate * 1.2 * (w_ext - w_int)
-
-        # Moisture from fogging/humidification
-        moisture_added = 0.0
-        for effect in actuator_effects.values():
-            if "humidity_addition_rate" in effect:
-                moisture_added += effect["humidity_addition_rate"]
+        moisture_ventilation = (
+            totals.ventilation_rate * STANDARD_AIR_DENSITY * (w_ext - w_int)
+        )
 
         # New humidity ratio
-        dw = (moisture_ventilation + moisture_added) * dt / air_mass
+        air_mass = geom.volume * STANDARD_AIR_DENSITY
+        dw = (moisture_ventilation + totals.humidity_addition) * dt / air_mass
         new_w = max(0.001, w_int + dw)
 
         # Convert back to RH
         new_rh = relative_humidity(new_temp, new_w)
         new_rh = max(10.0, min(100.0, new_rh))
 
-        # =========================================
-        # CO2 balance
-        # =========================================
+        return new_rh
 
-        # Simplified CO2 model
-        co2_ventilation = total_ventilation_rate * 1.2 * (co2_ext - co2_int)
+    def _calculate_co2_balance(self, totals: ActuatorTotals) -> float:
+        """Calculate new CO2 concentration from balance equation.
 
-        # CO2 injection from actuators
-        co2_injection = 0.0
-        for effect in actuator_effects.values():
-            if "co2_injection_rate" in effect:
-                co2_injection += effect["co2_injection_rate"]
+        Accounts for ventilation exchange and CO2 injection.
 
-        d_co2 = (co2_ventilation + co2_injection) * dt / air_mass
+        Args:
+            totals: Aggregated actuator effect totals.
+
+        Returns:
+            New CO2 concentration in ppm (200-5000).
+        """
+        dt = self._config.time_step
+        geom = self._state.geometry
+        co2_int = self._state.interior.co2_ppm
+        co2_ext = self._state.exterior.co2_ppm
+
+        # CO2 is in ppm (parts per million by volume)
+        # For well-mixed gases, volume exchange rate equals mass exchange rate
+        # d(CO2_ppm)/dt = (ventilation_rate / volume) * (CO2_ext - CO2_int)
+        #                 + injection_rate
+        #
+        # CO2 ventilation exchange: volume flow rate * concentration difference
+        # Result is in ppm * m^3/s, normalized by volume gives ppm/s
+        co2_ventilation_rate = (
+            totals.ventilation_rate * (co2_ext - co2_int) / geom.volume
+        )
+
+        # CO2 injection from actuators (in ppm/s contribution to the volume)
+        # Actuators report injection_rate in appropriate units (e.g., mL/s of pure CO2)
+        # Convert to ppm contribution: (injection_rate_m3_per_s / volume_m3) * 1e6
+        # Assuming co2_injection is in m^3/s of pure CO2
+        # ppm contribution = (m^3/s / volume_m^3) * 1e6
+        co2_injection_rate = totals.co2_injection * 1e6 / geom.volume
+
+        d_co2 = (co2_ventilation_rate + co2_injection_rate) * dt
         new_co2 = max(200.0, min(5000.0, co2_int + d_co2))
 
-        # =========================================
-        # Update modifiers (thermal mass)
-        # =========================================
+        return new_co2
 
+    def _update_modifiers(self) -> None:
+        """Update all climate modifiers (e.g., thermal mass)."""
+        dt = self._config.time_step
         for modifier in self._modifiers:
             modifier.update(dt, self._state)
 
-        # =========================================
-        # Update state
-        # =========================================
+    def _update_interior_state(
+        self, new_temp: float, new_rh: float, new_co2: float
+    ) -> None:
+        """Reconstruct greenhouse state with new interior values.
 
+        Args:
+            new_temp: New interior temperature in degrees Celsius.
+            new_rh: New interior relative humidity percentage.
+            new_co2: New interior CO2 concentration in ppm.
+        """
         self._state = GreenhouseState(
             interior=AirState(
                 temperature=new_temp,
@@ -385,6 +546,44 @@ class SimulationEngine:
             wind_speed=self._state.wind_speed,
             wind_direction=self._state.wind_direction,
         )
+
+    def _calculate_physics(self, actuator_effects: dict[str, dict[str, Any]]) -> None:
+        """Calculate physics and update interior state.
+
+        Orchestrates the physics calculations by:
+        1. Aggregating actuator effects
+        2. Computing heat balance
+        3. Applying temperature change
+        4. Computing moisture balance
+        5. Computing CO2 balance
+        6. Updating climate modifiers
+        7. Updating interior state
+
+        Args:
+            actuator_effects: Dictionary of actuator effects keyed by actuator name.
+        """
+        # Aggregate all actuator effects
+        totals = self._aggregate_actuator_effects(actuator_effects)
+
+        # Calculate heat balance and new temperature
+        q_net = self._calculate_heat_balance(totals)
+        new_temp = self._apply_temperature_change(q_net)
+
+        # Calculate moisture balance (depends on new temperature for RH)
+        new_rh = self._calculate_moisture_balance(totals, new_temp)
+
+        # Calculate CO2 balance
+        new_co2 = self._calculate_co2_balance(totals)
+
+        # Update modifiers (thermal mass, etc.)
+        self._update_modifiers()
+
+        # Update state with new values
+        self._update_interior_state(new_temp, new_rh, new_co2)
+
+    # =========================================================================
+    # Event emission methods
+    # =========================================================================
 
     def _emit_telemetry(self) -> None:
         """Emit simulation telemetry events."""

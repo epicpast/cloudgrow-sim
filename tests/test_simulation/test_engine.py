@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from cloudgrow_sim.components.actuators.fans import ExhaustFan
 from cloudgrow_sim.components.sensors.temperature import TemperatureSensor
 from cloudgrow_sim.controllers.hysteresis import HysteresisController
+from cloudgrow_sim.core.base import Actuator
 from cloudgrow_sim.core.events import EventType, get_event_bus, reset_event_bus
 from cloudgrow_sim.core.state import (
     COVERING_MATERIALS,
@@ -17,6 +19,7 @@ from cloudgrow_sim.core.state import (
     Location,
 )
 from cloudgrow_sim.simulation.engine import (
+    _MAX_TEMP_CHANGE_RATE,
     SimulationConfig,
     SimulationEngine,
     SimulationStats,
@@ -396,3 +399,379 @@ class TestSimulationEngineWithComponents:
         # Fan should have provided effect
         effect = fan.get_effect(state)
         assert "ventilation_rate" in effect
+
+
+class TestTemperatureRateLimiting:
+    """Tests for temperature change rate limiting."""
+
+    def setup_method(self) -> None:
+        """Reset event bus before each test."""
+        reset_event_bus()
+
+    def test_temperature_change_rate_limited(self) -> None:
+        """Test that temperature changes are rate-limited."""
+        state = create_test_state()
+        # Use 1 second time step for easier calculation
+        config = SimulationConfig(
+            time_step=1.0,
+            start_time=state.time,
+            emit_events=False,
+        )
+        engine = SimulationEngine(state, config=config)
+        initial_temp = engine.state.interior.temperature
+
+        engine.step()
+
+        max_change = _MAX_TEMP_CHANGE_RATE * 1.0  # 1 second time step
+        actual_change = abs(engine.state.interior.temperature - initial_temp)
+        # Allow small tolerance for floating point
+        assert actual_change <= max_change + 0.001
+
+    def test_temperature_change_scales_with_time_step(self) -> None:
+        """Test that maximum temperature change scales with time step."""
+        state1 = create_test_state()
+        state2 = create_test_state()
+
+        # Short time step
+        config1 = SimulationConfig(
+            time_step=1.0,
+            start_time=state1.time,
+            emit_events=False,
+        )
+        engine1 = SimulationEngine(state1, config=config1)
+        initial_temp1 = engine1.state.interior.temperature
+        engine1.step()
+        change1 = abs(engine1.state.interior.temperature - initial_temp1)
+
+        # Longer time step
+        config2 = SimulationConfig(
+            time_step=60.0,
+            start_time=state2.time,
+            emit_events=False,
+        )
+        engine2 = SimulationEngine(state2, config=config2)
+        initial_temp2 = engine2.state.interior.temperature
+        engine2.step()
+        change2 = abs(engine2.state.interior.temperature - initial_temp2)
+
+        # Max change for 60s should be 60x max change for 1s
+        max_change_1s = _MAX_TEMP_CHANGE_RATE * 1.0
+        max_change_60s = _MAX_TEMP_CHANGE_RATE * 60.0
+
+        assert change1 <= max_change_1s + 0.001
+        assert change2 <= max_change_60s + 0.001
+
+    def test_temperature_clamped_to_lower_bound(self) -> None:
+        """Test temperature is clamped to valid lower bound (-50)."""
+        # Create state with very cold conditions to drive temperature down
+        state = GreenhouseState(
+            interior=AirState(temperature=-45.0, humidity=30.0, co2_ppm=400.0),
+            exterior=AirState(temperature=-50.0, humidity=30.0, co2_ppm=400.0),
+            time=datetime(2025, 1, 15, 2, 0, tzinfo=UTC),
+            location=Location(
+                latitude=70.0, longitude=25.0, elevation=50.0, timezone_str="UTC"
+            ),
+            geometry=GreenhouseGeometry(
+                geometry_type=GeometryType.GABLE,
+                length=10.0,
+                width=6.0,
+                height_eave=2.4,
+                height_ridge=3.5,
+            ),
+            covering=COVERING_MATERIALS["double_polyethylene"],
+            solar_radiation=0.0,
+            wind_speed=10.0,
+            wind_direction=0.0,
+        )
+
+        config = SimulationConfig(
+            time_step=60.0,
+            start_time=state.time,
+            emit_events=False,
+        )
+        engine = SimulationEngine(state, config=config)
+
+        # Run many steps to try to push temperature below -50
+        engine.run(steps=100)
+
+        # Temperature should never go below -50 (AirState valid range)
+        assert engine.state.interior.temperature >= -50.0
+
+    def test_temperature_clamped_to_upper_bound(self) -> None:
+        """Test temperature is clamped to valid upper bound (60)."""
+        # Create state with extreme hot conditions
+        state = GreenhouseState(
+            interior=AirState(temperature=55.0, humidity=20.0, co2_ppm=400.0),
+            exterior=AirState(temperature=50.0, humidity=15.0, co2_ppm=400.0),
+            time=datetime(2025, 7, 15, 14, 0, tzinfo=UTC),
+            location=Location(
+                latitude=25.0, longitude=-110.0, elevation=50.0, timezone_str="UTC"
+            ),
+            geometry=GreenhouseGeometry(
+                geometry_type=GeometryType.GABLE,
+                length=10.0,
+                width=6.0,
+                height_eave=2.4,
+                height_ridge=3.5,
+            ),
+            covering=COVERING_MATERIALS["double_polyethylene"],
+            solar_radiation=1200.0,  # High solar radiation
+            wind_speed=0.5,
+            wind_direction=180.0,
+        )
+
+        config = SimulationConfig(
+            time_step=60.0,
+            start_time=state.time,
+            emit_events=False,
+        )
+        engine = SimulationEngine(state, config=config)
+
+        # Run many steps to try to push temperature above 60
+        engine.run(steps=100)
+
+        # Temperature should never exceed 60 (AirState valid range)
+        assert engine.state.interior.temperature <= 60.0
+
+
+class MockCO2Injector(Actuator):
+    """Mock CO2 injector actuator for testing."""
+
+    def __init__(
+        self,
+        name: str,
+        injection_rate: float = 0.0001,
+    ) -> None:
+        """Initialize mock CO2 injector.
+
+        Args:
+            name: Actuator name.
+            injection_rate: CO2 injection rate in m^3/s of pure CO2.
+        """
+        super().__init__(name)
+        self._injection_rate = injection_rate
+        self._output = 0.0
+
+    def set_output(self, value: float) -> None:
+        """Set output level (0-1)."""
+        self._output = max(0.0, min(1.0, value))
+
+    def get_effect(self, state: GreenhouseState) -> dict[str, Any]:
+        """Get CO2 injection effect."""
+        del state  # Unused
+        return {"co2_injection_rate": self._injection_rate * self._output}
+
+    def _apply_effect(self, dt: float, state: GreenhouseState) -> None:
+        """Apply effect (handled by engine)."""
+        del dt, state  # Unused
+
+
+class TestCO2Balance:
+    """Tests for CO2 balance calculations."""
+
+    def setup_method(self) -> None:
+        """Reset event bus before each test."""
+        reset_event_bus()
+
+    def test_co2_ventilation_exchange(self) -> None:
+        """Test CO2 exchange through ventilation."""
+        # Set interior CO2 higher than exterior
+        state = GreenhouseState(
+            interior=AirState(temperature=22.0, humidity=55.0, co2_ppm=1000.0),
+            exterior=AirState(temperature=20.0, humidity=50.0, co2_ppm=400.0),
+            time=datetime(2025, 6, 21, 12, 0, tzinfo=UTC),
+            location=Location(
+                latitude=37.5, longitude=-77.4, elevation=50.0, timezone_str="UTC"
+            ),
+            geometry=GreenhouseGeometry(
+                geometry_type=GeometryType.GABLE,
+                length=10.0,
+                width=6.0,
+                height_eave=2.4,
+                height_ridge=3.5,
+            ),
+            covering=COVERING_MATERIALS["double_polyethylene"],
+            solar_radiation=500.0,
+            wind_speed=2.0,
+            wind_direction=180.0,
+        )
+
+        config = SimulationConfig(
+            time_step=60.0,
+            start_time=state.time,
+            emit_events=False,
+        )
+        engine = SimulationEngine(state, config=config)
+
+        # Add ventilation actuator at full output
+        fan = ExhaustFan("vent_fan", max_flow_rate=2.0, power_consumption=500.0)
+        fan.set_output(1.0)
+        engine.add_actuator(fan)
+
+        initial_co2 = engine.state.interior.co2_ppm
+
+        # Run several steps
+        engine.run(steps=60)
+
+        # CO2 should decrease toward exterior level due to ventilation
+        assert engine.state.interior.co2_ppm < initial_co2
+        # CO2 should be moving toward exterior level (400 ppm)
+        assert engine.state.interior.co2_ppm < 1000.0
+
+    def test_co2_injection(self) -> None:
+        """Test CO2 injection from actuator."""
+        state = create_test_state()
+        # Start with low CO2
+        state = GreenhouseState(
+            interior=AirState(temperature=22.0, humidity=55.0, co2_ppm=400.0),
+            exterior=state.exterior,
+            time=state.time,
+            location=state.location,
+            geometry=state.geometry,
+            covering=state.covering,
+            solar_radiation=0.0,
+            wind_speed=0.0,  # No wind to minimize ventilation effects
+            wind_direction=0.0,
+        )
+
+        config = SimulationConfig(
+            time_step=60.0,
+            start_time=state.time,
+            emit_events=False,
+        )
+        engine = SimulationEngine(state, config=config)
+
+        # Add CO2 injector
+        injector = MockCO2Injector("co2_injector", injection_rate=0.001)
+        injector.set_output(1.0)
+        engine.add_actuator(injector)
+
+        initial_co2 = engine.state.interior.co2_ppm
+
+        # Run several steps
+        engine.run(steps=30)
+
+        # CO2 should increase due to injection
+        assert engine.state.interior.co2_ppm > initial_co2
+
+    def test_co2_clamped_to_lower_bound(self) -> None:
+        """Test CO2 stays above 200 ppm lower bound."""
+        # Create state with low interior CO2 and high ventilation potential
+        state = GreenhouseState(
+            interior=AirState(temperature=22.0, humidity=55.0, co2_ppm=250.0),
+            exterior=AirState(
+                temperature=20.0, humidity=50.0, co2_ppm=200.0
+            ),  # Exterior at lower bound
+            time=datetime(2025, 6, 21, 12, 0, tzinfo=UTC),
+            location=Location(
+                latitude=37.5, longitude=-77.4, elevation=50.0, timezone_str="UTC"
+            ),
+            geometry=GreenhouseGeometry(
+                geometry_type=GeometryType.GABLE,
+                length=10.0,
+                width=6.0,
+                height_eave=2.4,
+                height_ridge=3.5,
+            ),
+            covering=COVERING_MATERIALS["double_polyethylene"],
+            solar_radiation=500.0,
+            wind_speed=5.0,
+            wind_direction=180.0,
+        )
+
+        config = SimulationConfig(
+            time_step=60.0,
+            start_time=state.time,
+            emit_events=False,
+        )
+        engine = SimulationEngine(state, config=config)
+
+        # Add high ventilation
+        fan = ExhaustFan("vent_fan", max_flow_rate=5.0, power_consumption=1000.0)
+        fan.set_output(1.0)
+        engine.add_actuator(fan)
+
+        # Run many steps
+        engine.run(steps=100)
+
+        # CO2 should never go below 200 ppm
+        assert engine.state.interior.co2_ppm >= 200.0
+
+    def test_co2_clamped_to_upper_bound(self) -> None:
+        """Test CO2 stays below 5000 ppm upper bound."""
+        state = create_test_state()
+        # Start with high CO2
+        state = GreenhouseState(
+            interior=AirState(temperature=22.0, humidity=55.0, co2_ppm=4800.0),
+            exterior=state.exterior,
+            time=state.time,
+            location=state.location,
+            geometry=state.geometry,
+            covering=state.covering,
+            solar_radiation=0.0,
+            wind_speed=0.0,  # No ventilation
+            wind_direction=0.0,
+        )
+
+        config = SimulationConfig(
+            time_step=60.0,
+            start_time=state.time,
+            emit_events=False,
+        )
+        engine = SimulationEngine(state, config=config)
+
+        # Add aggressive CO2 injection
+        injector = MockCO2Injector("co2_injector", injection_rate=0.01)
+        injector.set_output(1.0)
+        engine.add_actuator(injector)
+
+        # Run many steps
+        engine.run(steps=100)
+
+        # CO2 should never exceed 5000 ppm
+        assert engine.state.interior.co2_ppm <= 5000.0
+
+    def test_co2_equilibrium_with_ventilation(self) -> None:
+        """Test CO2 approaches equilibrium with constant ventilation."""
+        # Start with elevated interior CO2
+        state = GreenhouseState(
+            interior=AirState(temperature=22.0, humidity=55.0, co2_ppm=800.0),
+            exterior=AirState(temperature=20.0, humidity=50.0, co2_ppm=420.0),
+            time=datetime(2025, 6, 21, 12, 0, tzinfo=UTC),
+            location=Location(
+                latitude=37.5, longitude=-77.4, elevation=50.0, timezone_str="UTC"
+            ),
+            geometry=GreenhouseGeometry(
+                geometry_type=GeometryType.GABLE,
+                length=10.0,
+                width=6.0,
+                height_eave=2.4,
+                height_ridge=3.5,
+            ),
+            covering=COVERING_MATERIALS["double_polyethylene"],
+            solar_radiation=500.0,
+            wind_speed=2.0,
+            wind_direction=180.0,
+        )
+
+        config = SimulationConfig(
+            time_step=60.0,
+            start_time=state.time,
+            emit_events=False,
+        )
+        engine = SimulationEngine(state, config=config)
+
+        # Add moderate ventilation
+        fan = ExhaustFan("vent_fan", max_flow_rate=1.0, power_consumption=500.0)
+        fan.set_output(0.5)
+        engine.add_actuator(fan)
+
+        # Run for extended period
+        engine.run(steps=120)
+
+        # CO2 should be closer to exterior level (420 ppm) than initial (800 ppm)
+        final_co2 = engine.state.interior.co2_ppm
+        distance_from_exterior = abs(final_co2 - 420.0)
+        initial_distance = abs(800.0 - 420.0)
+
+        assert distance_from_exterior < initial_distance
