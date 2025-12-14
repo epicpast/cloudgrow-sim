@@ -324,3 +324,22 @@ class TestSensorReproducibility:
 
         sensor = TemperatureSensor("temp", seed=42)
         assert isinstance(sensor.rng, np.random.Generator)
+
+    def test_warns_when_noise_without_seed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Debug message is logged when sensor has noise but no seed."""
+        import logging
+
+        with caplog.at_level(logging.DEBUG):
+            TemperatureSensor("temp_no_seed", noise_std_dev=0.5)
+        assert "non-deterministic RNG" in caplog.text
+        assert "temp_no_seed" in caplog.text
+
+    def test_rng_takes_precedence_over_seed(self) -> None:
+        """When both rng and seed provided, rng is used."""
+        import numpy as np
+
+        shared_rng = np.random.default_rng(999)
+        sensor = TemperatureSensor("temp", noise_std_dev=0.5, rng=shared_rng, seed=42)
+        assert sensor.rng is shared_rng

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from cloudgrow_sim.core.events import (
     Event,
     EventBus,
@@ -383,3 +385,23 @@ class TestEventBusRobustness:
 
         assert "specific" in results
         assert "wildcard" in results
+
+    def test_handler_exception_is_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Handler exceptions are logged with useful context."""
+        import logging
+
+        bus = EventBus()
+
+        def failing_handler(event: Event) -> None:
+            raise ValueError("Test failure!")
+
+        bus.subscribe(EventType.SIMULATION_START, failing_handler)
+
+        with caplog.at_level(logging.ERROR):
+            bus.emit(Event(event_type=EventType.SIMULATION_START, source="test_source"))
+
+        assert "failing_handler" in caplog.text
+        assert "simulation.start" in caplog.text
+        assert "test_source" in caplog.text
